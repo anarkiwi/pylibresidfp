@@ -28,6 +28,7 @@ jobs:
           CIBW_BUILD: "cp311-* cp312-* cp313-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BEFORE_ALL_LINUX: command -v patch || yum -y install patch
           CIBW_TEST_COMMAND: >-
             python -c "from pylibresidfp import SID; s = SID(); s.write(24, 15); assert len(s.clock(20000)) > 0"
       - uses: actions/upload-artifact@v7

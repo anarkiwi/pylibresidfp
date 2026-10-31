@@ -86,6 +86,14 @@ def test_run_is_chunk_invariant(sid):
     assert np.array_equal(whole, parts)
 
 
+def test_long_render_spanning_internal_chunks():
+    span = 3 * (1 << 24) + 7
+    whole = SID().run(TONE, span)
+    other = SID()
+    parts = np.concatenate([other.run(TONE, 1 << 24), other.clock(span - (1 << 24))])
+    assert np.array_equal(whole, parts)
+
+
 @pytest.mark.parametrize(
     "writes,until",
     [

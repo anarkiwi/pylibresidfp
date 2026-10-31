@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -19,7 +18,7 @@ using writes_t =
 
 namespace {
 
-constexpr int64_t kMaxStep = 1 << 24;
+constexpr size_t kScratch = 1 << 16;
 constexpr size_t kStateHeader = sizeof(int64_t);
 
 class Chip {
@@ -32,6 +31,8 @@ public:
     const auto m = method ? reSIDfp::RESAMPLE : reSIDfp::DECIMATE;
     if (!sid_.setSamplingParameters(clock_hz, m, sampling_hz))
       throw std::invalid_argument("unsupported sampling parameters");
+    max_step_ = std::max<int64_t>(
+        1, static_cast<int64_t>(kScratch / (2.0 * per_cycle_ + 2.0)));
   }
 
   int64_t cycle() const { return cycle_; }
@@ -136,37 +137,36 @@ private:
 
   samples_t render(const std::vector<int64_t> &w, int64_t until) {
     const size_t count = w.size() / 3;
-    std::vector<int16_t> out(
-        static_cast<size_t>(std::ceil((until - cycle_) * per_cycle_)) +
-        2 * (count + 1));
-    size_t n = 0;
+    std::vector<int16_t> out;
+    out.reserve(static_cast<size_t>((until - cycle_) * per_cycle_) + count + 1);
     {
       py::gil_scoped_release release;
       for (size_t i = 0; i < count; ++i) {
-        n += advance(w[3 * i], out.data() + n);
+        advance(w[3 * i], out);
         sid_.write(static_cast<int>(w[3 * i + 1]),
                    static_cast<unsigned char>(w[3 * i + 2]));
       }
-      n += advance(until, out.data() + n);
+      advance(until, out);
     }
-    samples_t arr(static_cast<py::ssize_t>(n));
-    std::copy_n(out.begin(), n, arr.mutable_data());
+    samples_t arr(static_cast<py::ssize_t>(out.size()));
+    std::copy(out.begin(), out.end(), arr.mutable_data());
     return arr;
   }
 
-  size_t advance(int64_t target, int16_t *buf) {
-    size_t n = 0;
+  void advance(int64_t target, std::vector<int16_t> &out) {
     while (cycle_ < target) {
       const auto step =
-          static_cast<unsigned>(std::min<int64_t>(target - cycle_, kMaxStep));
-      n += sid_.clock(step, buf + n);
+          static_cast<unsigned>(std::min<int64_t>(target - cycle_, max_step_));
+      const int n = sid_.clock(step, scratch_.data());
+      out.insert(out.end(), scratch_.begin(), scratch_.begin() + n);
       cycle_ += step;
     }
-    return n;
   }
 
   reSIDfp::residfp sid_;
   double per_cycle_;
+  int64_t max_step_ = 1;
+  std::vector<int16_t> scratch_ = std::vector<int16_t>(kScratch);
   int64_t cycle_ = 0;
   std::atomic<bool> busy_{false};
 };
