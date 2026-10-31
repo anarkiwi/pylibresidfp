@@ -216,3 +216,57 @@ def test_concurrent_use_of_one_instance_raises():
     finally:
         worker.join()
     sid.peek(0x1B)
+
+
+def test_voices_reports_written_state(sid):
+    sid.run([(0, 5, 0x9A), (1, 6, 0x7C), (2, 4, 0x41), (3, 0, 0x34), (4, 1, 0x12)], 10)
+    v = sid.voices()
+    assert (v["attack"][0], v["decay"][0], v["release"][0]) == (9, 10, 12)
+    assert v["sustain"][0] == 0x77
+    assert (v["gate"][0], v["waveform"][0], v["freq"][0]) == (1, 4, 0x1234)
+    assert not v["gate"][1:].any()
+
+
+def test_trace_matches_per_cycle_reads():
+    writes = [(0, 24, 15), (10, 5, 0x00), (20, 6, 0xF0), (30, 4, 0x41), (900, 4, 0x40)]
+    traced = SID().trace(writes, 2000)
+    other, seen = SID(), []
+    pending = list(writes)
+    for cycle in range(2001):
+        while pending and pending[0][0] == cycle:
+            other.write(*pending.pop(0)[1:])
+        v = other.voices()
+        seen += [(cycle, i, v["envelope"][i], v["state"][i]) for i in range(3)]
+        other.clock(1)
+    last, expect = {}, []
+    for event in seen:
+        if last.get(event[1]) != event[2:]:
+            expect.append(event)
+            last[event[1]] = event[2:]
+    assert [tuple(e) for e in traced] == expect
+
+
+def _lfsr_steps(lfsr: int, target: int) -> int:
+    steps = 0
+    while lfsr != target:
+        lfsr = (lfsr >> 1) | (((lfsr << 14) ^ (lfsr << 13)) & 0x4000)
+        steps += 1
+    return steps
+
+
+def _attack(prelude_release: int) -> tuple:
+    """``(cycles from gate-on to the envelope rising, LFSR steps to the attack-0 rate)``."""
+    sid = SID()
+    sid.run([(0, 5, 0x00), (1, 6, prelude_release)], 20000)
+    lfsr = int(sid.voices()["lfsr"][0])
+    t = sid.trace([(20000, 4, 0x01)], 60000)
+    start = t.envelope[t.voice == 0][0]
+    rising = t[(t.voice == 0) & (t.state == 0) & (t.envelope > start)]
+    return int(rising.cycle[0]) - 20000, _lfsr_steps(lfsr, 0x007F)
+
+
+def test_adsr_delay_bug_is_modelled():
+    prompt, _ = _attack(0x00)
+    stalled, steps = _attack(0x0F)
+    assert prompt < 64
+    assert steps > 1000 and abs(stalled - steps) < 64
