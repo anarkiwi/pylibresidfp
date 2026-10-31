@@ -27,10 +27,14 @@ public:
   static const WaveformGenerator &wave(residfp &r, int v) {
     return *r.sid.voice[v].wave();
   }
-  static uint8_t level(residfp &r, int v) { return env(r, v).envelope_counter; }
-  static uint8_t state(residfp &r, int v) {
-    return static_cast<uint8_t>(env(r, v).state);
+  static uint8_t level(const EnvelopeGenerator &e) {
+    return e.envelope_counter;
   }
+  static uint8_t state(const EnvelopeGenerator &e) {
+    return static_cast<uint8_t>(e.state);
+  }
+  static uint8_t level(residfp &r, int v) { return level(env(r, v)); }
+  static uint8_t state(residfp &r, int v) { return state(env(r, v)); }
   static py::dict voices(residfp &r) {
     py::dict out;
     const auto field = [&](const char *name, auto get) {
@@ -189,6 +193,58 @@ public:
                           array(state));
   }
 
+  py::tuple envelope_trace(int voice, const writes_t &writes, int64_t until) {
+    Claim claim(busy_);
+    if (voice < 0 || voice > 2)
+      throw std::invalid_argument("voice out of range");
+    const auto w = checked(writes, until);
+    std::vector<int64_t> cycles;
+    std::vector<uint8_t> level, state;
+    {
+      py::gil_scoped_release release;
+      reSIDfp::EnvelopeGenerator env = reSIDfp::Probe::env(sid_, voice);
+      const auto note = [&](int64_t at) {
+        const uint8_t l = reSIDfp::Probe::level(env);
+        const uint8_t s = reSIDfp::Probe::state(env);
+        if (cycles.empty() || l != level.back() || s != state.back()) {
+          cycles.push_back(at);
+          level.push_back(l);
+          state.push_back(s);
+        }
+      };
+      int64_t now = cycle_;
+      note(now);
+      size_t i = 0;
+      while (now < until) {
+        for (; i < w.size() && w[i] == now; i += 3) {
+          const auto value = static_cast<uint8_t>(w[i + 2]);
+          switch (w[i + 1] - 7 * voice) {
+          case 4:
+            env.writeCONTROL_REG(value);
+            break;
+          case 5:
+            env.writeATTACK_DECAY(value);
+            break;
+          case 6:
+            env.writeSUSTAIN_RELEASE(value);
+            break;
+          default:
+            break;
+          }
+        }
+        env.clock();
+        note(++now);
+      }
+    }
+    const auto array = [](const auto &v) {
+      using T = typename std::decay_t<decltype(v)>::value_type;
+      py::array_t<T> a(static_cast<py::ssize_t>(v.size()));
+      std::copy(v.begin(), v.end(), a.mutable_data());
+      return a;
+    };
+    return py::make_tuple(array(cycles), array(level), array(state));
+  }
+
   py::bytes save_state() {
     Claim claim(busy_);
     std::string buf(kStateHeader + sid_.stateSize(), '\0');
@@ -300,6 +356,7 @@ PYBIND11_MODULE(_core, m) {
       .def("serve", &Chip::serve)
       .def("voices", &Chip::voices)
       .def("trace", &Chip::trace)
+      .def("envelope_trace", &Chip::envelope_trace)
       .def("save_state", &Chip::save_state)
       .def("restore_state", &Chip::restore_state);
 }

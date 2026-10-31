@@ -25,6 +25,11 @@ def test_deterministic_without_filter():
     assert all(np.array_equal(runs[0], r) for r in runs)
 
 
+def test_save_state_is_reproducible(sid):
+    sid.run(TONE, CYCLES)
+    assert sid.save_state() == sid.save_state() == sid.copy().save_state()
+
+
 def test_save_restore_tail(case):
     ref = SID(case[0], method=case[1])
     head = TONE[TONE[:, 0] < 6000]
@@ -270,3 +275,28 @@ def test_adsr_delay_bug_is_modelled():
     stalled, steps = _attack(0x0F)
     assert prompt < 64
     assert steps > 1000 and abs(stalled - steps) < 64
+
+
+def test_envelope_trace_matches_trace_and_leaves_the_chip():
+    sid = SID()
+    sid.run([(0, 24, 15), (5, 12, 0x29), (6, 13, 0x8A), (7, 11, 0x41)], 3000)
+    before = sid.save_state()
+    writes = [
+        (3000, 12, 0x00),
+        (3100, 13, 0xF0),
+        (3200, 11, 0x40),
+        (3300, 0, 7),
+        (3900, 11, 0x41),
+    ]
+    env = sid.envelope_trace(1, writes, 60000)
+    assert sid.save_state() == before
+    full = sid.trace(writes, 60000)
+    full = full[full.voice == 1]
+    assert np.array_equal(env.cycle, full.cycle)
+    assert np.array_equal(env.envelope, full.envelope)
+    assert np.array_equal(env.state, full.state)
+
+
+def test_envelope_trace_validates_voice(sid):
+    with pytest.raises(ValueError):
+        sid.envelope_trace(3, [], 10)

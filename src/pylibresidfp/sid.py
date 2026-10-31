@@ -92,6 +92,15 @@ class SID:
             names=("cycle", "voice", "envelope", "state"),
         )
 
+    def envelope_trace(self, voice: int, writes: ArrayLike, until: int) -> np.recarray:
+        """``voice``'s envelope ``(cycle, envelope, state)`` at the start and at each change as
+        :meth:`trace` gives it, stepping a copy of that envelope generator alone: the chip is
+        left as it is, and writes to other registers are ignored."""
+        return np.rec.fromarrays(
+            self._chip.envelope_trace(int(voice), self._writes(writes), int(until)),
+            names=("cycle", "envelope", "state"),
+        )
+
     def save_state(self) -> bytes:
         return self._chip.save_state()
 
