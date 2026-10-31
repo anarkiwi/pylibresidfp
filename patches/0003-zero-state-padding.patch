@@ -1,0 +1,11 @@
+diff --git a/src/State.cpp b/src/State.cpp
+--- a/src/State.cpp
++++ b/src/State.cpp
+@@ -35,6 +35,7 @@
+ int State::saveState(SID &s, char* buffer, int size)
+ {
+     State state;
++    std::memset(static_cast<void*>(&state), 0, sizeof(state));
+ 
+     for (int i = 0; i < 3; i++)
+     {

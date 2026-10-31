@@ -25,6 +25,11 @@ def test_deterministic_without_filter():
     assert all(np.array_equal(runs[0], r) for r in runs)
 
 
+def test_save_state_is_reproducible(sid):
+    sid.run(TONE, CYCLES)
+    assert sid.save_state() == sid.save_state() == sid.copy().save_state()
+
+
 def test_save_restore_tail(case):
     ref = SID(case[0], method=case[1])
     head = TONE[TONE[:, 0] < 6000]
@@ -216,3 +221,146 @@ def test_concurrent_use_of_one_instance_raises():
     finally:
         worker.join()
     sid.peek(0x1B)
+
+
+def test_voices_reports_written_state(sid):
+    sid.run([(0, 5, 0x9A), (1, 6, 0x7C), (2, 4, 0x41), (3, 0, 0x34), (4, 1, 0x12)], 10)
+    v = sid.voices()
+    assert (v["attack"][0], v["decay"][0], v["release"][0]) == (9, 10, 12)
+    assert v["sustain"][0] == 0x77
+    assert (v["gate"][0], v["waveform"][0], v["freq"][0]) == (1, 4, 0x1234)
+    assert not v["gate"][1:].any()
+
+
+def test_trace_matches_per_cycle_reads():
+    writes = [(0, 24, 15), (10, 5, 0x00), (20, 6, 0xF0), (30, 4, 0x41), (900, 4, 0x40)]
+    traced = SID().trace(writes, 2000)
+    other, seen = SID(), []
+    pending = list(writes)
+    for cycle in range(2001):
+        while pending and pending[0][0] == cycle:
+            other.write(*pending.pop(0)[1:])
+        v = other.voices()
+        seen += [(cycle, i, v["envelope"][i], v["state"][i]) for i in range(3)]
+        other.clock(1)
+    last, expect = {}, []
+    for event in seen:
+        if last.get(event[1]) != event[2:]:
+            expect.append(event)
+            last[event[1]] = event[2:]
+    assert [tuple(e) for e in traced] == expect
+
+
+def _lfsr_steps(lfsr: int, target: int) -> int:
+    steps = 0
+    while lfsr != target:
+        lfsr = (lfsr >> 1) | (((lfsr << 14) ^ (lfsr << 13)) & 0x4000)
+        steps += 1
+    return steps
+
+
+def _attack(prelude_release: int) -> tuple:
+    """``(cycles from gate-on to the envelope rising, LFSR steps to the attack-0 rate)``."""
+    sid = SID()
+    sid.run([(0, 5, 0x00), (1, 6, prelude_release)], 20000)
+    lfsr = int(sid.voices()["lfsr"][0])
+    t = sid.trace([(20000, 4, 0x01)], 60000)
+    start = t.envelope[t.voice == 0][0]
+    rising = t[(t.voice == 0) & (t.state == 0) & (t.envelope > start)]
+    return int(rising.cycle[0]) - 20000, _lfsr_steps(lfsr, 0x007F)
+
+
+def test_adsr_delay_bug_is_modelled():
+    prompt, _ = _attack(0x00)
+    stalled, steps = _attack(0x0F)
+    assert prompt < 64
+    assert steps > 1000 and abs(stalled - steps) < 64
+
+
+def test_envelope_trace_matches_trace_and_leaves_the_chip():
+    sid = SID()
+    sid.run([(0, 24, 15), (5, 12, 0x29), (6, 13, 0x8A), (7, 11, 0x41)], 3000)
+    before = sid.save_state()
+    writes = [
+        (3000, 12, 0x00),
+        (3100, 13, 0xF0),
+        (3200, 11, 0x40),
+        (3300, 0, 7),
+        (3900, 11, 0x41),
+    ]
+    env = sid.envelope_trace(1, writes, 60000)
+    assert sid.save_state() == before
+    full = sid.trace(writes, 60000)
+    full = full[full.voice == 1]
+    assert np.array_equal(env.cycle, full.cycle)
+    assert np.array_equal(env.envelope, full.envelope)
+    assert np.array_equal(env.state, full.state)
+
+
+def test_envelope_trace_validates_voice_and_lfsr(sid):
+    with pytest.raises(ValueError):
+        sid.envelope_trace(3, [], 10)
+    for bad in (0, 0x8000):
+        with pytest.raises(ValueError):
+            sid.envelope_trace(0, [], 10, lfsr=bad)
+
+
+def test_envelope_trace_from_an_lfsr_state():
+    sid = SID()
+    sid.run([(0, 5, 0x00), (1, 6, 0x0F)], 20000)
+    writes = [(20000, 4, 0x01)]
+    own = sid.envelope_trace(0, writes, 60000)
+    same = sid.envelope_trace(0, writes, 60000, lfsr=int(sid.voices()["lfsr"][0]))
+    assert np.array_equal(same, own)
+    prompt = sid.envelope_trace(0, writes, 60000, lfsr=0x7FFF)
+    rise = [
+        t.cycle[(t.state == 0) & (t.envelope > t.envelope[0])][0] - 20000
+        for t in (prompt, own)
+    ]
+    assert rise[0] < 64 < rise[1]
+
+
+def _lfsr_step(lfsr: int) -> int:
+    return (lfsr >> 1) | (((lfsr << 14) ^ (lfsr << 13)) & 0x4000)
+
+
+RATE0 = [0x7FFF]
+while RATE0[-1] != 0x007F:
+    RATE0.append(_lfsr_step(RATE0[-1]))
+
+
+def _hard_restart_onsets(ad: int, ctrl: int) -> list:
+    """Cycles from gate-on to the first attack step, from each phase of the rate-0 counter that a
+    hard restart (gate off, AD and SR zero for two frames) leaves it in."""
+    sid = SID()
+    sid.run([(0, 5, 0x00), (1, 6, 0x00), (2, 4, 0x40)], 2 * 19656)
+    out = []
+    for lfsr in RATE0:
+        g = sid.cycle
+        t = sid.envelope_trace(
+            0, [(g, 5, ad), (g + 1, 6, 0x88), (g + 2, 4, ctrl)], g + 3 * 19656, lfsr
+        )
+        out.append(int(t.cycle[(t.state == 0) & (t.envelope > t.envelope[0])][0] - g))
+    return out
+
+
+def test_rate_zero_counter_cycles_nine_states():
+    assert RATE0 == [0x7FFF, 0x3FFF, 0x1FFF, 0xFFF, 0x7FF, 0x3FF, 0x1FF, 0xFF, 0x7F]
+
+
+@pytest.mark.parametrize(
+    "ad,onsets",
+    [
+        (0x0A, [12, 11, 10, 9, 8, 7, 32773, 32772, 13]),
+        (0x0F, [12, 11, 10, 9, 8, 7, 32773, 32772, 13]),
+        (0x00, [12, 11, 10, 9, 8, 7, 6, 32772, 13]),
+        (0x50, [223, 222, 221, 220, 219, 218, 6, 216, 224]),
+    ],
+)
+def test_hard_restart_gate_on_per_rate_counter_phase(ad, onsets):
+    assert _hard_restart_onsets(ad, 0x01) == onsets
+
+
+@pytest.mark.parametrize("ad", [0x0A, 0x00, 0x50])
+def test_test_bit_does_not_reach_the_envelope(ad):
+    assert _hard_restart_onsets(ad, 0x09) == _hard_restart_onsets(ad, 0x01)

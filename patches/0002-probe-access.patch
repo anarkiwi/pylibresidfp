@@ -1,0 +1,44 @@
+diff --git a/src/EnvelopeGenerator.h b/src/EnvelopeGenerator.h
+--- a/src/EnvelopeGenerator.h
++++ b/src/EnvelopeGenerator.h
+@@ -45,6 +45,7 @@
+ class EnvelopeGenerator
+ {
+     friend class State;
++    friend class Probe;
+ 
+ public:
+     /**
+diff --git a/src/SID.h b/src/SID.h
+--- a/src/SID.h
++++ b/src/SID.h
+@@ -63,6 +63,7 @@
+ class SID
+ {
+     friend class State;
++    friend class Probe;
+ 
+ private:
+     /// Currently active filter
+diff --git a/src/WaveformGenerator.h b/src/WaveformGenerator.h
+--- a/src/WaveformGenerator.h
++++ b/src/WaveformGenerator.h
+@@ -91,6 +91,7 @@
+ class WaveformGenerator
+ {
+     friend class State;
++    friend class Probe;
+ 
+ private:
+     rc_matrix_t model_wave;
+diff --git a/src/residfp/residfp.h b/src/residfp/residfp.h
+--- a/src/residfp/residfp.h
++++ b/src/residfp/residfp.h
+@@ -42,6 +42,7 @@
+  */
+ class RESIDFP_EXTERN residfp
+ {
++    friend class Probe;
+ private:
+     SID &sid;
+ 

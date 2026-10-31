@@ -1,4 +1,4 @@
-from .sid import SID
+from .sid import SID, Phases
 
-__all__ = ["SID"]
-__version__ = "0.1.0"
+__all__ = ["SID", "Phases"]
+__version__ = "0.3.0"
