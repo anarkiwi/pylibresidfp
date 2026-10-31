@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -11,6 +12,38 @@ from ._core import Chip  # pylint: disable=no-name-in-module,import-error
 _MODELS = {"6581": 0, "8580": 1}
 _METHODS = {"decimate": 0, "resample": 1}
 _MAX_RATIO = 16384.0
+
+
+@dataclass(frozen=True)
+class Phases:
+    """Every rate-counter phase of :meth:`SID.envelope_phases`, compressed.
+
+    ``states[k]`` is the LFSR state of phase ``k`` (``count`` phases). ``pieces`` rows are
+    ``(k0, k1, first, events)``: phases ``k0 <= k < k1`` share the ``events`` rows of ``events``
+    from ``first``, whose columns are ``(base, slope, envelope, state)``; event ``i`` of phase ``k``
+    falls at cycle ``base + slope * (k - k0)``."""
+
+    pieces: NDArray[np.int64]
+    events: NDArray[np.int64]
+    count: int
+    states: NDArray[np.uint16]
+
+    def trajectory(self, k: int) -> np.recarray:
+        """Phase ``k``'s ``(cycle, envelope, state)``, as ``envelope_trace`` gives it."""
+        if not 0 <= k < self.count:
+            raise IndexError(f"phase {k} out of range for {self.count} phases")
+        k0, _, first, events = self.pieces[
+            np.searchsorted(self.pieces[:, 0], k, side="right") - 1
+        ]
+        base, slope, level, state = self.events[first : first + events].T
+        return np.rec.fromarrays(
+            (
+                base + slope * (k - k0),
+                level.astype(np.uint8),
+                state.astype(np.uint8),
+            ),
+            names=("cycle", "envelope", "state"),
+        )
 
 
 class SID:
@@ -107,6 +140,15 @@ class SID:
                 -1 if lfsr is None else int(lfsr),
             ),
             names=("cycle", "envelope", "state"),
+        )
+
+    def envelope_phases(self, voice: int, writes: ArrayLike, until: int) -> Phases:
+        """:meth:`envelope_trace` for every phase of ``voice``'s rate counter at once: phase ``k``
+        starts the LFSR at the ``k``-th state, from 0x7FFF, of the cycle that ends at the voice's
+        current rate. Exact for every phase, at a cost that follows the events and the distinct
+        behaviours rather than the number of phases or cycles."""
+        return Phases(
+            *self._chip.envelope_phases(int(voice), self._writes(writes), int(until))
         )
 
     def save_state(self) -> bytes:

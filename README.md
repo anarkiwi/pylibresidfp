@@ -16,6 +16,8 @@ sid.voices()                   # per-voice envelope (LFSR, rate, counter, state,
 sid.trace(writes, until)       # run without audio: (cycle, voice, envelope, state) at each envelope change
 sid.envelope_trace(v, writes, until, lfsr=None)  # one voice's envelope alone from a copy (its
                                # rate counter's LFSR set to lfsr if given): the chip is untouched
+sid.envelope_phases(v, writes, until)  # envelope_trace for every rate-counter phase at once: Phases
+                               # (pieces, events, count, states) with .trajectory(k), exact for each k
 state = sid.save_state(); sid.restore_state(state)
 twin = sid.copy()              # same parameters and state; SID is also picklable
 ```
@@ -30,7 +32,7 @@ internals through `patches/0002-probe-access.patch`, which befriends a `reSIDfp:
 `patches/0003-zero-state-padding.patch` zeroes the saved state's struct padding, so `save_state` is
 reproducible byte for byte.
 
-`clock`, `run`, `serve`, `trace`, `save_state` and `restore_state` release the GIL. Each instance has a busy
+`clock`, `run`, `serve`, `trace`, `envelope_trace`, `envelope_phases`, `save_state` and `restore_state` release the GIL. Each instance has a busy
 flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct
 instances run in parallel.
 
