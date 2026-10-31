@@ -84,3 +84,22 @@ def test_a_patch_that_does_not_apply_is_reported(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(tool, "SUBMODULE", str(ROOT / tool.SUBMODULE))
     assert tool.main(["patches"]) == 1
     assert "0001-bad.patch does not apply" in capsys.readouterr().err
+
+
+def test_library_version_reads_configure_ac():
+    text = "".join(
+        f"m4_define([lib_{k}], [{v}])\n"
+        for k, v in (("major", 1), ("minor", 12), ("level", 3))
+    )
+    assert tool.library_version(text) == (1, 12, 3)
+
+
+@pytest.mark.parametrize(
+    "version, names",
+    [((1, 2, 2), ["a", "old"]), ((1, 2, 3), ["a"]), ((1, 3, 0), ["a"])],
+)
+def test_patch_files_select_by_version(tmp_path, version, names):
+    (tmp_path / "before-1.2.3").mkdir()
+    (tmp_path / "a.patch").touch()
+    (tmp_path / "before-1.2.3" / "old.patch").touch()
+    assert [p.stem for p in tool.patch_files(version, tmp_path)] == names

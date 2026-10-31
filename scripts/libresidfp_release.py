@@ -3,7 +3,8 @@
 ``check`` prints ``latest=``, ``pinned=`` and ``newer=`` lines (appendable to
 ``$GITHUB_OUTPUT``), ``bump-version`` raises pylibresidfp's patch version in
 ``pyproject.toml`` and ``src/pylibresidfp/__init__.py``, and ``patches`` applies
-``patches/*.patch`` in order to a scratch copy of the submodule's sources.
+``patches/*.patch`` (plus ``patches/before-X.Y.Z/*.patch`` when the submodule's
+version is below X.Y.Z) in order to a scratch copy of the submodule's sources.
 """
 
 from __future__ import annotations
@@ -44,6 +45,25 @@ def parse_ls_remote(text: str) -> dict[str, str]:
         if name.endswith("^{}") or name not in commits:
             commits[name.removesuffix("^{}")] = sha
     return commits
+
+
+def library_version(configure_ac: str) -> tuple[int, int, int]:
+    """``(major, minor, level)`` from the ``m4_define([lib_*])`` lines."""
+    parts = (
+        re.search(rf"^m4_define\(\[lib_{part}\], \[(\d+)\]\)", configure_ac, re.M)
+        for part in ("major", "minor", "level")
+    )
+    return tuple(int(m[1]) for m in parts)
+
+
+def patch_files(version: tuple[int, int, int], patch_dir: Path) -> list[Path]:
+    """Patches for a library ``version``: common ones, then ``before-X.Y.Z`` ones."""
+    found = sorted(patch_dir.glob("*.patch"))
+    for sub in sorted(patch_dir.glob("before-*")):
+        limit = semver("v" + sub.name.removeprefix("before-"))
+        if limit and version < limit:
+            found += sorted(sub.glob("*.patch"))
+    return found
 
 
 def run(*cmd: str, **kwargs) -> str:
@@ -109,7 +129,8 @@ def bump_version(_args) -> int:
 def patches(_args) -> int:
     with tempfile.TemporaryDirectory() as scratch:
         shutil.copytree(ROOT / SUBMODULE / "src", Path(scratch) / "src")
-        for patch in sorted((ROOT / "patches").glob("*.patch")):
+        version = library_version((ROOT / SUBMODULE / "configure.ac").read_text())
+        for patch in patch_files(version, ROOT / "patches"):
             done = subprocess.run(
                 ["patch", "-p1", "-i", str(patch)], cwd=scratch, check=False
             )
