@@ -1,0 +1,13 @@
+diff --git a/src/FilterModelConfig.h b/src/FilterModelConfig.h
+index d875653..05e485b 100644
+--- a/src/FilterModelConfig.h
++++ b/src/FilterModelConfig.h
+@@ -296,7 +296,7 @@ public:
+ 
+     inline uint16_t getNormalizedValue(double value) const
+     {
+-        return to_uint16_dither(N16 * (value - vmin), rnd.getNoise());
++        return to_uint16_dither(N16 * (value - vmin), 0.5);
+     }
+ 
+     template<int N>

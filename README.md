@@ -1,0 +1,49 @@
+# pylibresidfp
+
+pybind11 binding of [libresidfp](https://github.com/libsidplayfp/libresidfp) v1.2.3 (the reSIDfp SID
+emulator) with chip state save/restore, a deterministic output and a GIL-free render loop.
+
+```python
+from pylibresidfp import SID
+
+sid = SID(model="6581", clock_hz=985248.0, sampling_hz=44100.0, method="decimate", filter=True)
+sid.write(24, 15); sid.read(27); sid.peek(27); sid.reset()
+sid.cycle                      # absolute cycle count, starts at 0
+sid.clock(cycles)              # np.int16 samples for those cycles
+sid.run(writes, until)         # writes: (N, 3) ints or [(cycle, reg, value), ...], absolute cycles
+sid.serve(writes, cycle, reg)  # run to `cycle`, then read(reg): the body of a NativeSid on_read
+state = sid.save_state(); sid.restore_state(state)
+twin = sid.copy()              # same parameters and state; SID is also picklable
+```
+
+`run` clocks to each write's cycle, writes it, then clocks to `until`. Write cycles must not
+precede `sid.cycle` or each other and must not exceed `until`; violations raise `ValueError`.
+`serve` discards the samples it produces (use `run` to keep audio).
+
+`clock`, `run`, `serve`, `save_state` and `restore_state` release the GIL. Each instance has a busy
+flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct
+instances run in parallel.
+
+Fed directly from `vagrant_moses`: `sid.run(native_sid.drain_writes(), until)`.
+
+## Determinism
+
+Two instances with the same parameters and writes produce identical samples, for both models and
+both methods. Upstream v1.2.3 dithers the filter's float-to-int conversion from a table indexed by
+a counter held in the process-wide filter-model singleton; `patches/0001-deterministic-rounding.patch`
+(applied at build time) replaces the dither with plain rounding. Other process-wide state is
+immutable after first use (filter and waveform tables). The static setters
+`Filter6581::setFilterRange`/`setCaps` are not exposed. v1.2.3 has no `noiseLevel`, so there is no
+`noise_level` option.
+
+State is not portable across builds. `sid.cycle` is part of the saved state.
+
+## Build
+
+`pip install .` needs CMake >= 3.20, a C++17 compiler and network access: libresidfp is fetched
+with CMake FetchContent at the pinned commit of tag v1.2.3. Use
+`-Ccmake.define.LIBRESIDFP_REPO=<path or URL>` or `-DFETCHCONTENT_SOURCE_DIR_LIBRESIDFP=<dir>` to
+use a local copy. Tests: `pip install -e .[dev]`, then `pytest -n auto --cov=pylibresidfp`.
+`docker build .` builds and runs the full lint and test suite.
+
+GPL-2.0-or-later (see COPYING).

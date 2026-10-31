@@ -1,0 +1,43 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pylibresidfp"
+version = "0.1.0"
+description = "pybind11 binding of libresidfp (reSIDfp SID emulator) with chip state save/restore"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+license-files = ["COPYING"]
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C++",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+    "Topic :: System :: Emulators",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-cov", "pytest-xdist", "vagrant-moses[cpu]"]
+dev = ["pylibresidfp[test]", "black", "pylint"]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.20"
+wheel.packages = ["src/pylibresidfp"]
+wheel.install-dir = "pylibresidfp"
+sdist.include = ["COPYING", "patches"]
+build-dir = "build/{wheel_tag}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pylint.main]
+good-names = ["i", "n", "a", "b", "s"]
+[tool.pylint.messages_control]
+disable = ["missing-module-docstring", "missing-class-docstring", "missing-function-docstring"]
