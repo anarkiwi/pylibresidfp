@@ -44,6 +44,42 @@ public:
   static uint8_t state(const EnvelopeGenerator &e) {
     return static_cast<uint8_t>(e.state);
   }
+  static int ctr(const EnvelopeGenerator &e) { return e.exponential_counter; }
+  static int ctr_period(const EnvelopeGenerator &e) {
+    return e.exponential_counter_period;
+  }
+  static int window(const EnvelopeGenerator &e) {
+    return e.counter_enabled && e.state != EnvelopeGenerator::State::ATTACK
+               ? e.exponential_counter_period
+               : 1;
+  }
+  static void shift_ctr(EnvelopeGenerator &e, int64_t delta) {
+    e.exponential_counter += static_cast<unsigned>(delta);
+  }
+  static uint8_t sustain(const EnvelopeGenerator &e) { return e.sustain; }
+  static void shift_level(EnvelopeGenerator &e, int delta) {
+    e.envelope_counter = static_cast<uint8_t>(e.envelope_counter + delta);
+    e.env3 = static_cast<uint8_t>(e.env3 + delta);
+  }
+  static bool same_regime(const EnvelopeGenerator &a,
+                          const EnvelopeGenerator &b) {
+    return a.rate == b.rate &&
+           a.exponential_counter_period == b.exponential_counter_period &&
+           a.state == b.state && a.next_state == b.next_state &&
+           a.counter_enabled == b.counter_enabled && a.gate == b.gate &&
+           a.attack == b.attack && a.decay == b.decay &&
+           a.sustain == b.sustain && a.release == b.release;
+  }
+  static bool same_but_level(const EnvelopeGenerator &a,
+                             const EnvelopeGenerator &b) {
+    return same_regime(a, b) && a.lfsr == b.lfsr &&
+           a.new_exponential_counter_period ==
+               b.new_exponential_counter_period &&
+           a.state_pipeline == b.state_pipeline &&
+           a.envelope_pipeline == b.envelope_pipeline &&
+           a.exponential_pipeline == b.exponential_pipeline &&
+           a.resetLfsr == b.resetLfsr;
+  }
   static uint8_t level(residfp &r, int v) { return level(env(r, v)); }
   static uint8_t state(residfp &r, int v) { return state(env(r, v)); }
   static py::dict voices(residfp &r) {
@@ -119,10 +155,33 @@ struct Write {
   uint8_t value;
 };
 
+// Element j of the run, 0 <= j < count, is at cycle base + spacing * j + slope
+// * (k - k0) with envelope level + step * j.
 struct Event {
-  int64_t base, slope;
+  int64_t base, slope, spacing, count;
   uint8_t level, state;
+  int8_t step;
 };
+
+int64_t last_cycle(const Event &e) {
+  return e.base + e.spacing * (e.count - 1);
+}
+
+int last_level(const Event &e) { return e.level + e.step * (e.count - 1); }
+
+bool extend(Event &a, const Event &b) {
+  if (a.state != b.state || a.slope != b.slope)
+    return false;
+  const int64_t d = b.level - last_level(a), dc = b.base - last_cycle(a);
+  if ((d != 1 && d != -1) || dc <= 0 ||
+      (a.count > 1 && (a.step != d || a.spacing != dc)) ||
+      (b.count > 1 && (b.step != d || b.spacing != dc)))
+    return false;
+  a.step = static_cast<int8_t>(d);
+  a.spacing = dc;
+  a.count += b.count;
+  return true;
+}
 
 struct Piece {
   int64_t k0, k1;
@@ -138,6 +197,10 @@ struct Group {
   size_t wi;
   reSIDfp::EnvelopeGenerator e;
   std::vector<Event> ev;
+  reSIDfp::EnvelopeGenerator mark{};
+  int64_t mark_t = 0, mark_nev = 0, nev = 0;
+  int age = 0;
+  bool has_mark = false, armed = false;
 };
 
 class PhaseSim {
@@ -151,8 +214,8 @@ public:
     Group g{0, tab.pos[reSIDfp::Probe::rate(e0_)] + 1, start_, false, 0, e0_,
             {}};
     reSIDfp::Probe::set_lfsr(g.e, tab.state[0]);
-    g.ev.push_back(
-        {start_, 0, reSIDfp::Probe::level(g.e), reSIDfp::Probe::state(g.e)});
+    g.ev.push_back({start_, 0, 0, 1, reSIDfp::Probe::level(g.e),
+                    reSIDfp::Probe::state(g.e), 0});
     stack_.push_back(std::move(g));
     while (!stack_.empty()) {
       Group cur = std::move(stack_.back());
@@ -178,21 +241,105 @@ private:
   static Group child(Group c, int64_t a, int64_t b) {
     c.k1 = c.k0 + b;
     c.k0 += a;
-    if (c.shifted)
+    if (c.shifted) {
       c.t -= a;
+      c.mark_t -= a;
+    }
     for (auto &e : c.ev)
       e.base += e.slope * a;
     return c;
   }
 
+  static void add(Group &g, const Event &b) {
+    if (g.ev.empty() || !extend(g.ev.back(), b))
+      g.ev.push_back(b);
+    g.nev += b.count;
+  }
+
   void note(Group &g) const {
     const uint8_t l = reSIDfp::Probe::level(g.e);
     const uint8_t s = reSIDfp::Probe::state(g.e);
-    if (l != g.ev.back().level || s != g.ev.back().state)
-      g.ev.push_back({g.t, g.shifted ? -1 : 0, l, s});
+    if (l != last_level(g.ev.back()) || s != g.ev.back().state)
+      add(g, {g.t, g.shifted ? -1 : 0, 0, 1, l, s, 0});
+  }
+
+  static int64_t runway(const EG &e, int d) {
+    const bool sustained = reSIDfp::Probe::state(e) ==
+                           static_cast<uint8_t>(EG::State::DECAY_SUSTAIN);
+    int l = reSIDfp::Probe::level(e);
+    int64_t n = 0;
+    while (!(sustained && l == reSIDfp::Probe::sustain(e))) {
+      l += d;
+      if (l == 0xff || l == 0 || l == 0x5d || l == 0x36 || l == 0x1a ||
+          l == 0x0e || l == 0x06)
+        break;
+      ++n;
+    }
+    return n;
+  }
+
+  void skip(Group &g, int64_t w) const {
+    const int64_t q = g.t - g.mark_t, steps = g.nev - g.mark_nev;
+    const int d = reSIDfp::Probe::level(g.e) - reSIDfp::Probe::level(g.mark);
+    int64_t n = (w - g.t) / q;
+    if (steps == 1 && (d == 1 || d == -1))
+      n = std::min(n, runway(g.e, d));
+    else if (steps != 0 || d != 0)
+      n = 0;
+    if (n <= 0)
+      return;
+    if (steps) {
+      const Event &b = g.ev.back();
+      add(g, {last_cycle(b) + q, -1, q, n,
+              static_cast<uint8_t>(reSIDfp::Probe::level(g.e) + d), b.state,
+              static_cast<int8_t>(d)});
+      reSIDfp::Probe::shift_level(g.e, static_cast<int>(n) * d);
+    }
+    g.t += n * q;
+  }
+
+  static void anchor(Group &g) {
+    g.mark = g.e;
+    g.mark_t = g.t;
+    g.mark_nev = g.nev;
+    g.age = 0;
+    g.has_mark = true;
+  }
+
+  void coast(Group &g, int64_t w) const {
+    const int64_t span = g.t - g.mark_t;
+    if (g.nev != g.mark_nev || span % g.age)
+      return;
+    const int64_t each = span / g.age;
+    const int64_t n =
+        std::min<int64_t>((w - g.t) / each, reSIDfp::Probe::ctr_period(g.e) -
+                                                1 - reSIDfp::Probe::ctr(g.e));
+    if (n <= 0)
+      return;
+    reSIDfp::Probe::shift_ctr(g.e, n);
+    g.t += n * each;
+    g.age += static_cast<int>(n);
+  }
+
+  void settle(Group &g, int64_t w) const {
+    g.armed = false;
+    if (g.has_mark && ++g.age <= reSIDfp::Probe::window(g.e) &&
+        reSIDfp::Probe::same_regime(g.mark, g.e)) {
+      if (!reSIDfp::Probe::same_but_level(g.mark, g.e))
+        return;
+      const int64_t more =
+          reSIDfp::Probe::ctr(g.e) - reSIDfp::Probe::ctr(g.mark);
+      if (more == g.age)
+        return coast(g, w);
+      if (more != 0)
+        return;
+      skip(g, w);
+    }
+    anchor(g);
   }
 
   void apply(Group &g) const {
+    g.has_mark = g.armed = false;
     for (; g.wi < wr_.size() && wr_[g.wi].cycle == g.t; ++g.wi) {
       switch (wr_[g.wi].reg) {
       case 4:
@@ -225,7 +372,10 @@ private:
         }
       } else if (reSIDfp::Probe::idle(g.e) &&
                  reSIDfp::Probe::lfsr(g.e) != reSIDfp::Probe::rate(g.e)) {
-        return jump_shifted(g, w);
+        if (g.armed)
+          settle(g, w);
+        else if (!jump_shifted(g, w))
+          return;
       } else if (g.t == w) {
         Group first = child(g, 0, 1);
         first.shifted = false;
@@ -240,6 +390,7 @@ private:
         if (g.k0 == g.k1)
           return;
       } else {
+        g.armed |= reSIDfp::Probe::lfsr(g.e) == reSIDfp::Probe::rate(g.e);
         g.e.clock();
         ++g.t;
         note(g);
@@ -307,48 +458,80 @@ private:
     }
   }
 
-  void jump_shifted(Group &g, int64_t w) {
+  bool jump_shifted(Group &g, int64_t w) {
     const auto &tab = table();
     const int64_t n = g.k1 - g.k0, i0 = index(g.e);
     const int64_t m = wrap(tab.pos[reSIDfp::Probe::rate(g.e)] - i0);
     const int64_t lead = w - g.t;
     const int64_t na = std::min(n, std::max<int64_t>(0, m - lead + 1));
-    if (na > 0) {
-      Group due = na == n ? child(std::move(g), 0, na) : child(g, 0, na);
-      place(due.e, i0 + lead);
-      due.t = w;
-      due.shifted = false;
-      stack_.push_back(std::move(due));
+    if (na == 0) {
+      place(g.e, i0 + m);
+      g.t += m;
+      return true;
     }
+    Group due = na == n ? child(std::move(g), 0, na) : child(g, 0, na);
+    place(due.e, i0 + lead);
+    due.t = w;
+    due.shifted = false;
+    stack_.push_back(std::move(due));
     if (na < n) {
       Group rest = child(std::move(g), na, n);
       place(rest.e, i0 + m);
       rest.t += m;
       stack_.push_back(std::move(rest));
     }
+    return false;
+  }
+
+  static std::vector<Event> flat(const std::vector<Event> &runs) {
+    std::vector<Event> out;
+    for (const auto &r : runs)
+      for (int64_t j = 0; j < r.count; ++j)
+        out.push_back({r.base + r.spacing * j, r.slope, 0, 1,
+                       static_cast<uint8_t>(r.level + r.step * j), r.state, 0});
+    return out;
+  }
+
+  static bool same_levels(const std::vector<Event> &a,
+                          const std::vector<Event> &b) {
+    size_t i = 0, j = 0;
+    int64_t u = 0, v = 0;
+    while (i < a.size() && j < b.size()) {
+      if (a[i].state != b[j].state ||
+          a[i].level + a[i].step * u != b[j].level + b[j].step * v)
+        return false;
+      if (++u == a[i].count)
+        ++i, u = 0;
+      if (++v == b[j].count)
+        ++j, v = 0;
+    }
+    return i == a.size() && j == b.size();
   }
 
   static bool join(Piece &a, const Piece &b) {
-    if (a.ev.size() != b.ev.size())
+    if (!same_levels(a.ev, b.ev))
       return false;
+    std::vector<Event> x = flat(a.ev);
+    const std::vector<Event> y = flat(b.ev);
     const int64_t la = a.k1 - a.k0, lb = b.k1 - b.k0;
-    std::vector<int64_t> slope(a.ev.size());
-    for (size_t i = 0; i < a.ev.size(); ++i) {
-      const Event &x = a.ev[i], &y = b.ev[i];
-      if (x.level != y.level || x.state != y.state ||
-          (la > 1 && lb > 1 && x.slope != y.slope))
+    const int tries = la == 1 && lb == 1 ? 2 : 1;
+    for (size_t i = 0; i < x.size(); ++i) {
+      if (la > 1 && lb > 1 && x[i].slope != y[i].slope)
         return false;
-      const int64_t cand[2] = {lb > 1 || la == 1 ? y.slope : x.slope, x.slope};
-      const int tries = la == 1 && lb == 1 ? 2 : 1;
+      const int64_t cand[2] = {lb > 1 || la == 1 ? y[i].slope : x[i].slope,
+                               x[i].slope};
       int c = 0;
-      while (c < tries && x.base + cand[c] * la != y.base)
+      while (c < tries && x[i].base + cand[c] * la != y[i].base)
         ++c;
       if (c == tries)
         return false;
-      slope[i] = cand[c];
+      x[i].slope = cand[c];
     }
-    for (size_t i = 0; i < slope.size(); ++i)
-      a.ev[i].slope = slope[i];
+    a.ev.clear();
+    for (const auto &e : x) {
+      if (a.ev.empty() || !extend(a.ev.back(), e))
+        a.ev.push_back(e);
+    }
     a.k1 = b.k1;
     return true;
   }
@@ -569,7 +752,7 @@ public:
     py::array_t<int64_t> pa(
         {static_cast<py::ssize_t>(pieces.size()), static_cast<py::ssize_t>(4)});
     py::array_t<int64_t> ea(
-        {static_cast<py::ssize_t>(total), static_cast<py::ssize_t>(4)});
+        {static_cast<py::ssize_t>(total), static_cast<py::ssize_t>(7)});
     py::array_t<uint16_t> states(static_cast<py::ssize_t>(count));
     std::copy(tab.state.begin(), tab.state.begin() + count,
               states.mutable_data());
@@ -582,9 +765,10 @@ public:
       prow += 4;
       first += static_cast<int64_t>(p.ev.size());
       for (const auto &e : p.ev) {
-        const int64_t r[4] = {e.base, e.slope, e.level, e.state};
-        std::copy(r, r + 4, erow);
-        erow += 4;
+        const int64_t r[7] = {e.base, e.slope,   e.level, e.state,
+                              e.step, e.spacing, e.count};
+        std::copy(r, r + 7, erow);
+        erow += 7;
       }
     }
     return py::make_tuple(pa, ea, count, states);
