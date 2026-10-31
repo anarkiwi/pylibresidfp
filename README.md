@@ -12,6 +12,8 @@ sid.cycle                      # absolute cycle count, starts at 0
 sid.clock(cycles)              # np.int16 samples for those cycles
 sid.run(writes, until)         # writes: (N, 3) ints or [(cycle, reg, value), ...], absolute cycles
 sid.serve(writes, cycle, reg)  # run to `cycle`, then read(reg): the body of a NativeSid on_read
+sid.voices()                   # per-voice envelope (LFSR, rate, counter, state, ...) and oscillator state
+sid.trace(writes, until)       # run without audio: (cycle, voice, envelope, state) at each envelope change
 state = sid.save_state(); sid.restore_state(state)
 twin = sid.copy()              # same parameters and state; SID is also picklable
 ```
@@ -20,7 +22,11 @@ twin = sid.copy()              # same parameters and state; SID is also picklabl
 precede `sid.cycle` or each other and must not exceed `until`; violations raise `ValueError`.
 `serve` discards the samples it produces (use `run` to keep audio).
 
-`clock`, `run`, `serve`, `save_state` and `restore_state` release the GIL. Each instance has a busy
+`trace` clocks the oscillators and envelopes only (libresidfp's `clockDigital`), so a chip used for
+tracing no longer renders the same audio as one that was not. `voices` and `trace` read libresidfp's
+internals through `patches/0002-probe-access.patch`, which befriends a `reSIDfp::Probe` class.
+
+`clock`, `run`, `serve`, `trace`, `save_state` and `restore_state` release the GIL. Each instance has a busy
 flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct
 instances run in parallel.
 

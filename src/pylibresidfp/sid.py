@@ -79,6 +79,19 @@ class SID:
     def serve(self, writes: ArrayLike, cycle: int, reg: int) -> int:
         return self._chip.serve(self._writes(writes), int(cycle), int(reg))
 
+    def voices(self) -> dict[str, NDArray[np.int64]]:
+        """Each voice's envelope and oscillator state, one ``(3,)`` array per field."""
+        return self._chip.voices()
+
+    def trace(self, writes: ArrayLike, until: int) -> np.recarray:
+        """:meth:`run` without audio, clocking the oscillators and envelopes only: each voice's
+        envelope ``(cycle, voice, envelope, state)`` at the start and whenever it changes.
+        """
+        return np.rec.fromarrays(
+            self._chip.trace(self._writes(writes), int(until)),
+            names=("cycle", "voice", "envelope", "state"),
+        )
+
     def save_state(self) -> bytes:
         return self._chip.save_state()
 
