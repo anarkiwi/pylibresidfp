@@ -14,7 +14,8 @@ sid.run(writes, until)         # writes: (N, 3) ints or [(cycle, reg, value), ..
 sid.serve(writes, cycle, reg)  # run to `cycle`, then read(reg): the body of a NativeSid on_read
 sid.voices()                   # per-voice envelope (LFSR, rate, counter, state, ...) and oscillator state
 sid.trace(writes, until)       # run without audio: (cycle, voice, envelope, state) at each envelope change
-sid.envelope_trace(v, writes, until)  # one voice's envelope alone, stepping a copy: the chip is untouched
+sid.envelope_trace(v, writes, until, lfsr=None)  # one voice's envelope alone from a copy (its
+                               # rate counter's LFSR set to lfsr if given): the chip is untouched
 state = sid.save_state(); sid.restore_state(state)
 twin = sid.copy()              # same parameters and state; SID is also picklable
 ```

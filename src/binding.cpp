@@ -27,6 +27,10 @@ public:
   static const WaveformGenerator &wave(residfp &r, int v) {
     return *r.sid.voice[v].wave();
   }
+  static void set_lfsr(EnvelopeGenerator &e, uint16_t lfsr) {
+    e.lfsr = lfsr;
+    e.resetLfsr = false;
+  }
   static uint8_t level(const EnvelopeGenerator &e) {
     return e.envelope_counter;
   }
@@ -193,16 +197,21 @@ public:
                           array(state));
   }
 
-  py::tuple envelope_trace(int voice, const writes_t &writes, int64_t until) {
+  py::tuple envelope_trace(int voice, const writes_t &writes, int64_t until,
+                           int lfsr) {
     Claim claim(busy_);
     if (voice < 0 || voice > 2)
       throw std::invalid_argument("voice out of range");
+    if (lfsr > 0x7fff || lfsr == 0)
+      throw std::invalid_argument("lfsr must be a non-zero 15-bit state");
     const auto w = checked(writes, until);
     std::vector<int64_t> cycles;
     std::vector<uint8_t> level, state;
     {
       py::gil_scoped_release release;
       reSIDfp::EnvelopeGenerator env = reSIDfp::Probe::env(sid_, voice);
+      if (lfsr >= 0)
+        reSIDfp::Probe::set_lfsr(env, static_cast<uint16_t>(lfsr));
       const auto note = [&](int64_t at) {
         const uint8_t l = reSIDfp::Probe::level(env);
         const uint8_t s = reSIDfp::Probe::state(env);

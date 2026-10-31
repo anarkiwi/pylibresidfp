@@ -297,6 +297,70 @@ def test_envelope_trace_matches_trace_and_leaves_the_chip():
     assert np.array_equal(env.state, full.state)
 
 
-def test_envelope_trace_validates_voice(sid):
+def test_envelope_trace_validates_voice_and_lfsr(sid):
     with pytest.raises(ValueError):
         sid.envelope_trace(3, [], 10)
+    for bad in (0, 0x8000):
+        with pytest.raises(ValueError):
+            sid.envelope_trace(0, [], 10, lfsr=bad)
+
+
+def test_envelope_trace_from_an_lfsr_state():
+    sid = SID()
+    sid.run([(0, 5, 0x00), (1, 6, 0x0F)], 20000)
+    writes = [(20000, 4, 0x01)]
+    own = sid.envelope_trace(0, writes, 60000)
+    same = sid.envelope_trace(0, writes, 60000, lfsr=int(sid.voices()["lfsr"][0]))
+    assert np.array_equal(same, own)
+    prompt = sid.envelope_trace(0, writes, 60000, lfsr=0x7FFF)
+    rise = [
+        t.cycle[(t.state == 0) & (t.envelope > t.envelope[0])][0] - 20000
+        for t in (prompt, own)
+    ]
+    assert rise[0] < 64 < rise[1]
+
+
+def _lfsr_step(lfsr: int) -> int:
+    return (lfsr >> 1) | (((lfsr << 14) ^ (lfsr << 13)) & 0x4000)
+
+
+RATE0 = [0x7FFF]
+while RATE0[-1] != 0x007F:
+    RATE0.append(_lfsr_step(RATE0[-1]))
+
+
+def _hard_restart_onsets(ad: int, ctrl: int) -> list:
+    """Cycles from gate-on to the first attack step, from each phase of the rate-0 counter that a
+    hard restart (gate off, AD and SR zero for two frames) leaves it in."""
+    sid = SID()
+    sid.run([(0, 5, 0x00), (1, 6, 0x00), (2, 4, 0x40)], 2 * 19656)
+    out = []
+    for lfsr in RATE0:
+        g = sid.cycle
+        t = sid.envelope_trace(
+            0, [(g, 5, ad), (g + 1, 6, 0x88), (g + 2, 4, ctrl)], g + 3 * 19656, lfsr
+        )
+        out.append(int(t.cycle[(t.state == 0) & (t.envelope > t.envelope[0])][0] - g))
+    return out
+
+
+def test_rate_zero_counter_cycles_nine_states():
+    assert RATE0 == [0x7FFF, 0x3FFF, 0x1FFF, 0xFFF, 0x7FF, 0x3FF, 0x1FF, 0xFF, 0x7F]
+
+
+@pytest.mark.parametrize(
+    "ad,onsets",
+    [
+        (0x0A, [12, 11, 10, 9, 8, 7, 32773, 32772, 13]),
+        (0x0F, [12, 11, 10, 9, 8, 7, 32773, 32772, 13]),
+        (0x00, [12, 11, 10, 9, 8, 7, 6, 32772, 13]),
+        (0x50, [223, 222, 221, 220, 219, 218, 6, 216, 224]),
+    ],
+)
+def test_hard_restart_gate_on_per_rate_counter_phase(ad, onsets):
+    assert _hard_restart_onsets(ad, 0x01) == onsets
+
+
+@pytest.mark.parametrize("ad", [0x0A, 0x00, 0x50])
+def test_test_bit_does_not_reach_the_envelope(ad):
+    assert _hard_restart_onsets(ad, 0x09) == _hard_restart_onsets(ad, 0x01)
