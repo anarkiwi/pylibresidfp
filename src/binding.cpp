@@ -175,11 +175,10 @@ private:
     reSIDfp::Probe::set_lfsr(e, table().state[wrap(idx)]);
   }
 
-  Group child(const Group &g, int64_t a, int64_t b) const {
-    Group c = g;
-    c.k0 = g.k0 + a;
-    c.k1 = g.k0 + b;
-    if (g.shifted)
+  static Group child(Group c, int64_t a, int64_t b) {
+    c.k1 = c.k0 + b;
+    c.k0 += a;
+    if (c.shifted)
       c.t -= a;
     for (auto &e : c.ev)
       e.base += e.slope * a;
@@ -230,7 +229,8 @@ private:
       } else if (g.t == w) {
         Group first = child(g, 0, 1);
         first.shifted = false;
-        g = child(g, 1, g.k1 - g.k0);
+        const int64_t n = g.k1 - g.k0;
+        g = child(std::move(g), 1, n);
         if (w == until_) {
           finish(std::move(first));
         } else {
@@ -264,7 +264,7 @@ private:
     if (hit >= n)
       return false;
     const auto spawn = [&](int64_t a, int64_t b) {
-      Group c = child(g, a, b);
+      Group c = b == n ? child(std::move(g), a, b) : child(g, a, b);
       c.e = before;
       place(c.e, i0 + a);
       c.e.clock();
@@ -284,7 +284,7 @@ private:
     const int64_t n = g.k1 - g.k0, h = w - g.t, i0 = index(g.e);
     const int64_t rate = tab.pos[reSIDfp::Probe::rate(g.e)];
     const int64_t u = wrap(rate - i0);
-    const int64_t cuts[3] = {0, std::min(n, u + 1), n};
+    const int64_t cuts[3] = {0, std::min(n, u + 1), n}, t0 = g.t;
     for (int s = 0; s < 2; ++s) {
       const int64_t a = cuts[s], b = cuts[s + 1];
       if (a >= b)
@@ -292,15 +292,15 @@ private:
       const int64_t span = (s ? u + kPeriod : u) - a;
       const int64_t c = std::min(b, std::max(a, a + span - h + 1));
       if (c > a) {
-        Group late = child(g, a, c);
+        Group late = c == n ? child(std::move(g), a, c) : child(g, a, c);
         place(late.e, i0 + a + h);
         late.t = w;
         stack_.push_back(std::move(late));
       }
       if (c < b) {
-        Group early = child(g, c, b);
+        Group early = b == n ? child(std::move(g), c, b) : child(g, c, b);
         place(early.e, rate);
-        early.t = g.t + span - (c - a);
+        early.t = t0 + span - (c - a);
         early.shifted = true;
         stack_.push_back(std::move(early));
       }
@@ -314,14 +314,14 @@ private:
     const int64_t lead = w - g.t;
     const int64_t na = std::min(n, std::max<int64_t>(0, m - lead + 1));
     if (na > 0) {
-      Group due = child(g, 0, na);
+      Group due = na == n ? child(std::move(g), 0, na) : child(g, 0, na);
       place(due.e, i0 + lead);
       due.t = w;
       due.shifted = false;
       stack_.push_back(std::move(due));
     }
     if (na < n) {
-      Group rest = child(g, na, n);
+      Group rest = child(std::move(g), na, n);
       place(rest.e, i0 + m);
       rest.t += m;
       stack_.push_back(std::move(rest));
