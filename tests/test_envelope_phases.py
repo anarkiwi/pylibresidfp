@@ -227,3 +227,147 @@ def test_much_faster_than_per_phase_traces():
     for k in sample:
         want = sid.envelope_trace(0, writes, until, int(phases.states[k]))
         assert np.array_equal(phases.trajectory(k).cycle, want.cycle)
+
+
+def _settled(ad, sr, control, gate=0):
+    sid = SID()
+    sid.run([(0, 5, ad), (1, 6, sr), (2, 4, control | gate)], 2 * FRAME)
+    return sid
+
+
+def _slow_release(release, attack):
+    sid = _settled(0x00, 0xF0 | release, 0x40)
+    g = sid.cycle
+    writes = [(g + 5, 5, attack << 4), (g + 6, 6, 0x00), (g + 2 * FRAME, 4, 0x41)]
+    return sid, writes, g + 3 * FRAME
+
+
+def _hold():
+    sid = _settled(0x08, 0xF0, 0x40, 1)
+    g = sid.cycle
+    writes = [
+        (g + 5, 5, 0x00),
+        (g + 2 * FRAME + 100, 4, 0x40),
+        (g + 2 * FRAME + 7000, 4, 0x41),
+    ]
+    return sid, writes, g + 3 * FRAME
+
+
+def _disabled(release):
+    sid = _settled(0x00, 0xF0, 0x40)
+    sid.run([(sid.cycle + 1, 6, 0xF0 | release)], sid.cycle + 50)
+    g = sid.cycle
+    writes = [(g + 2 * FRAME, 4, 0x41), (g + 2 * FRAME + 9000, 4, 0x40)]
+    return sid, writes, g + 3 * FRAME
+
+
+def _brute_ratio(sid, writes, until):
+    fast = np.inf
+    for _ in range(3):
+        t0 = time.perf_counter()
+        phases = sid.envelope_phases(0, writes, until)
+        fast = min(fast, time.perf_counter() - t0)
+    sample = range(0, phases.count, max(1, phases.count // 40))
+    t0 = time.perf_counter()
+    for k in sample:
+        sid.envelope_trace(0, writes, until, int(phases.states[k]))
+    brute = (time.perf_counter() - t0) / len(sample) * phases.count
+    return brute / fast
+
+
+@pytest.mark.parametrize("release,attack", [(8, 0), (8, 1), (9, 0), (9, 1)])
+def test_slow_release_to_fast_attack_is_exact_and_faster(release, attack):
+    sid, writes, until = _slow_release(release, attack)
+    phases = _check(sid, 0, writes, until)
+    assert phases.count == {8: 392, 9: 977}[release]
+    assert len(phases.events) < 25 * len(phases.pieces)
+    assert _brute_ratio(sid, writes, until) > 10
+
+
+def test_hard_restart_is_exact_and_faster():
+    sid = _settled(0x00, 0x00, 0x40)
+    g = sid.cycle
+    writes = [(g + 5, 5, 0x00), (g + 6, 6, 0x00), (g + 2 * FRAME, 4, 0x01)]
+    _check(sid, 0, writes, g + 3 * FRAME)
+    assert _brute_ratio(sid, writes, g + 3 * FRAME) > 5
+
+
+def test_sustain_hold_then_release_is_exact():
+    sid, writes, until = _hold()
+    assert _check(sid, 0, writes, until).count == 392
+    assert _brute_ratio(sid, writes, until) > 10
+
+
+def test_parked_sustain_has_no_events_until_the_next_write():
+    sid = _settled(0x08, 0xF0, 0x40, 1)
+    g = sid.cycle
+    writes = [(g + 5, 5, 0x00)]
+    phases = _check(sid, 0, writes, g + 3 * FRAME)
+    assert len(phases.events) == 1 and phases.events[0, 6] == 1
+    assert _brute_ratio(sid, writes, g + 3 * FRAME) > 50
+
+
+@pytest.mark.parametrize("release", [8, 9])
+def test_disabled_counter_at_zero_is_exact(release):
+    sid, writes, until = _disabled(release)
+    assert sid.voices()["counter_enabled"][0] == 0
+    _check(sid, 0, writes, until)
+
+
+@pytest.mark.parametrize("seed", range(300, 306))
+def test_matches_envelope_trace_across_long_quiet_windows(seed):
+    rng = np.random.default_rng(seed)
+    sid = _settled(int(rng.integers(0, 256)), int(rng.integers(0, 256)), 0x40, seed & 1)
+    g = sid.cycle
+    gate = 0x40 | int(rng.integers(0, 2))
+    writes = [
+        (g + 5, 5, int(rng.integers(0, 256))),
+        (g + 6, 6, int(rng.integers(0, 256))),
+        (g + 2 * FRAME + int(rng.integers(0, 3000)), 4, gate),
+    ]
+    _check(sid, 0, writes, g + 3 * FRAME)
+
+
+def test_events_are_ramps_that_expand_to_the_trace():
+    sid, writes, until = _slow_release(8, 0)
+    phases = sid.envelope_phases(0, writes, until)
+    assert phases.events.shape[1] == 7
+    assert phases.events[:, 6].max() > 100
+    assert (phases.events[:, 6] >= 1).all()
+    assert set(phases.events[phases.events[:, 6] > 1, 4].tolist()) <= {-1, 1}
+
+
+@pytest.mark.parametrize("case", ["slow", "hold", "plain"])
+def test_expand_matches_trajectories(case):
+    if case == "slow":
+        sid, writes, until = _slow_release(8, 1)
+    elif case == "hold":
+        sid, writes, until = _hold()
+    else:
+        sid = _settled(0x0A, 0x88, 0x40)
+        writes, until = [(sid.cycle + 4, 4, 0x01)], sid.cycle + FRAME
+    phases = sid.envelope_phases(0, writes, until)
+    table = {}
+    ids, times = phases.expand(table)
+    assert ids.shape == (phases.count,) and times.dtype == np.int64
+    assert len(table) == len(set(ids.tolist())) == ids.max() + 1
+    seen = {}
+    for k in range(phases.count):
+        t = phases.trajectory(k)
+        assert times[k, : len(t)].tolist() == t.cycle.tolist()
+        assert (times[k, len(t) :] == -1).all()
+        key = (t.envelope.tobytes(), t.state.tobytes())
+        assert seen.setdefault(int(ids[k]), key) == key
+    assert len(set(seen.values())) == len(seen)
+    again, _ = phases.expand(table)
+    assert np.array_equal(again, ids)
+    assert len(table) == ids.max() + 1
+
+
+def test_expand_numbers_sequences_consistently_across_calls():
+    sid, writes, until = _slow_release(8, 0)
+    table = {}
+    first, _ = sid.envelope_phases(0, writes, until).expand(table)
+    second, _ = sid.envelope_phases(0, writes, until).expand(table)
+    assert np.array_equal(first, second)
+    assert np.array_equal(first, sid.envelope_phases(0, writes, until).expand()[0])

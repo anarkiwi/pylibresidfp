@@ -19,31 +19,64 @@ class Phases:
     """Every rate-counter phase of :meth:`SID.envelope_phases`, compressed.
 
     ``states[k]`` is the LFSR state of phase ``k`` (``count`` phases). ``pieces`` rows are
-    ``(k0, k1, first, events)``: phases ``k0 <= k < k1`` share the ``events`` rows of ``events``
-    from ``first``, whose columns are ``(base, slope, envelope, state)``; event ``i`` of phase ``k``
-    falls at cycle ``base + slope * (k - k0)``."""
+    ``(k0, k1, first, runs)``: phases ``k0 <= k < k1`` share the ``runs`` rows of ``events`` from
+    ``first``, whose columns are ``(base, slope, envelope, state, step, spacing, count)``. A row
+    is a ramp of ``count`` consecutive envelope changes: change ``j`` of phase ``k`` falls at
+    cycle ``base + slope * (k - k0) + spacing * j`` and sets envelope ``envelope + step * j`` in
+    ``state``."""
 
     pieces: NDArray[np.int64]
     events: NDArray[np.int64]
     count: int
     states: NDArray[np.uint16]
 
+    def _piece(self, row: NDArray[np.int64]) -> tuple[NDArray[np.int64], ...]:
+        """The piece's per-change ``(base, slope, envelope, state)`` with ramps expanded."""
+        _, _, first, runs = row
+        base, slope, level, state, step, spacing, count = self.events[
+            first : first + runs
+        ].T
+        j = np.arange(count.sum()) - np.repeat(count.cumsum() - count, count)
+        return (
+            np.repeat(base, count) + np.repeat(spacing, count) * j,
+            np.repeat(slope, count),
+            np.repeat(level, count) + np.repeat(step, count) * j,
+            np.repeat(state, count),
+        )
+
     def trajectory(self, k: int) -> np.recarray:
         """Phase ``k``'s ``(cycle, envelope, state)``, as ``envelope_trace`` gives it."""
         if not 0 <= k < self.count:
             raise IndexError(f"phase {k} out of range for {self.count} phases")
-        k0, _, first, events = self.pieces[
-            np.searchsorted(self.pieces[:, 0], k, side="right") - 1
-        ]
-        base, slope, level, state = self.events[first : first + events].T
+        row = self.pieces[np.searchsorted(self.pieces[:, 0], k, side="right") - 1]
+        base, slope, level, state = self._piece(row)
         return np.rec.fromarrays(
             (
-                base + slope * (k - k0),
+                base + slope * (k - row[0]),
                 level.astype(np.uint8),
                 state.astype(np.uint8),
             ),
             names=("cycle", "envelope", "state"),
         )
+
+    def expand(
+        self, table: dict[bytes, int] | None = None
+    ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+        """``(ids, times)`` over all phases: ``ids[k]`` numbers phase ``k``'s sequence of
+        ``(envelope, state)`` changes in ``table`` (a new one if not given; pass the same one to
+        number sequences consistently across calls), and ``times[k]`` its change cycles, padded
+        with -1 to the longest sequence."""
+        table = {} if table is None else table
+        pieces = [self._piece(row) for row in self.pieces]
+        ids = np.empty(self.count, np.int64)
+        times = np.full((self.count, max(len(p[0]) for p in pieces)), -1, np.int64)
+        for (k0, k1, _, _), (base, slope, level, state) in zip(
+            self.pieces.tolist(), pieces
+        ):
+            key = np.stack((level, state)).astype(np.uint8).tobytes()
+            ids[k0:k1] = table.setdefault(key, len(table))
+            times[k0:k1, : len(base)] = base + slope * np.arange(k1 - k0)[:, None]
+        return ids, times
 
 
 class SID:

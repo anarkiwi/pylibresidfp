@@ -17,7 +17,8 @@ sid.trace(writes, until)       # run without audio: (cycle, voice, envelope, sta
 sid.envelope_trace(v, writes, until, lfsr=None)  # one voice's envelope alone from a copy (its
                                # rate counter's LFSR set to lfsr if given): the chip is untouched
 sid.envelope_phases(v, writes, until)  # envelope_trace for every rate-counter phase at once: Phases
-                               # (pieces, events, count, states) with .trajectory(k), exact for each k
+                               # (pieces, events, count, states) with .trajectory(k), exact for each k;
+                               # events are ramps of envelope steps; .expand(table) -> (ids, times)
 state = sid.save_state(); sid.restore_state(state)
 twin = sid.copy()              # same parameters and state; SID is also picklable
 ```
