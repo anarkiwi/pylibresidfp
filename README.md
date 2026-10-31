@@ -1,6 +1,6 @@
 # pylibresidfp
 
-pybind11 binding of [libresidfp](https://github.com/libsidplayfp/libresidfp) v1.2.3 (the reSIDfp SID
+pybind11 binding of [libresidfp](https://github.com/libsidplayfp/libresidfp) (the reSIDfp SID
 emulator) with chip state save/restore, a deterministic output and a GIL-free render loop.
 
 ```python
@@ -39,11 +39,11 @@ Fed directly from `vagrant_moses`: `sid.run(native_sid.drain_writes(), until)`.
 ## Determinism
 
 Two instances with the same parameters and writes produce identical samples, for both models and
-both methods. Upstream v1.2.3 dithers the filter's float-to-int conversion from a table indexed by
+both methods. Upstream libresidfp dithers the filter's float-to-int conversion from a table indexed by
 a counter held in the process-wide filter-model singleton; `patches/0001-deterministic-rounding.patch`
 (applied at build time) replaces the dither with plain rounding. Other process-wide state is
 immutable after first use (filter and waveform tables). The static setters
-`Filter6581::setFilterRange`/`setCaps` are not exposed. v1.2.3 has no `noiseLevel`, so there is no
+`Filter6581::setFilterRange`/`setCaps` are not exposed. The pinned libresidfp has no `noiseLevel`, so there is no
 `noise_level` option.
 
 State is not portable across builds. `sid.cycle` is part of the saved state.
@@ -51,8 +51,9 @@ State is not portable across builds. `sid.cycle` is part of the saved state.
 ## Build
 
 `git clone --recurse-submodules`, then `pip install .`. Needs CMake >= 3.20, `patch` and a C++17
-compiler. libresidfp is the submodule `extern/libresidfp` (tag v1.2.3); the build copies its
-sources and applies `patches/` to the copy. Tests: `pip install -e .[dev]`, then
+compiler. libresidfp is the submodule `extern/libresidfp`, pinned to a release tag; its version is
+read from the submodule's `configure.ac`, and `.github/workflows/libresidfp.yml` opens a PR when a
+newer release appears. The build copies its sources and applies `patches/` to the copy. Tests: `pip install -e .[dev]`, then
 `pytest -n auto --cov=pylibresidfp`. `docker build .` (build arg `PYTHON_VERSION`) runs the full
 lint and test suite.
 
