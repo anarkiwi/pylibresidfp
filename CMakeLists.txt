@@ -10,21 +10,25 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(LIBRESIDFP_REPO "https://github.com/libsidplayfp/libresidfp.git"
-    CACHE STRING "libresidfp git repository")
-set(LIBRESIDFP_TAG "v1.2.3")
-set(LIBRESIDFP_SHA "32c8525418a643eaed8dfafa3d7039e250050cfa")
+set(UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/extern/libresidfp)
+if(NOT EXISTS ${UPSTREAM}/src/SID.cpp)
+  message(FATAL_ERROR "extern/libresidfp is empty: git submodule update --init")
+endif()
 
 find_package(pybind11 CONFIG REQUIRED)
 
-include(FetchContent)
-FetchContent_Declare(libresidfp
-  GIT_REPOSITORY ${LIBRESIDFP_REPO}
-  GIT_TAG ${LIBRESIDFP_SHA}
-  PATCH_COMMAND sh -c "git apply -R --check \"$0\" 2>/dev/null || git apply \"$0\""
-                ${CMAKE_CURRENT_SOURCE_DIR}/patches/0001-deterministic-rounding.patch)
-FetchContent_MakeAvailable(libresidfp)
-set(RES ${libresidfp_SOURCE_DIR})
+find_program(PATCH_EXE patch REQUIRED)
+set(RES ${CMAKE_CURRENT_BINARY_DIR}/libresidfp)
+file(REMOVE_RECURSE ${RES})
+file(COPY ${UPSTREAM}/src DESTINATION ${RES})
+file(GLOB PATCHES ${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch)
+foreach(p ${PATCHES})
+  execute_process(COMMAND ${PATCH_EXE} -p1 -i ${p} WORKING_DIRECTORY ${RES}
+                  RESULT_VARIABLE rc)
+  if(rc)
+    message(FATAL_ERROR "patch ${p} failed")
+  endif()
+endforeach()
 
 include(CheckCXXSourceCompiles)
 check_cxx_source_compiles(

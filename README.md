@@ -40,10 +40,10 @@ State is not portable across builds. `sid.cycle` is part of the saved state.
 
 ## Build
 
-`pip install .` needs CMake >= 3.20, a C++17 compiler and network access: libresidfp is fetched
-with CMake FetchContent at the pinned commit of tag v1.2.3. Use
-`-Ccmake.define.LIBRESIDFP_REPO=<path or URL>` or `-DFETCHCONTENT_SOURCE_DIR_LIBRESIDFP=<dir>` to
-use a local copy. Tests: `pip install -e .[dev]`, then `pytest -n auto --cov=pylibresidfp`.
-`docker build .` builds and runs the full lint and test suite.
+`git clone --recurse-submodules`, then `pip install .`. Needs CMake >= 3.20, `patch` and a C++17
+compiler. libresidfp is the submodule `extern/libresidfp` (tag v1.2.3); the build copies its
+sources and applies `patches/` to the copy. Tests: `pip install -e .[dev]`, then
+`pytest -n auto --cov=pylibresidfp`. `docker build .` (build arg `PYTHON_VERSION`) runs the full
+lint and test suite.
 
 GPL-2.0-or-later (see COPYING).

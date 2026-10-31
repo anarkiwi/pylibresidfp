@@ -2,6 +2,5 @@
 build
 dist
 .git
-extern
 **/__pycache__
 .coverage

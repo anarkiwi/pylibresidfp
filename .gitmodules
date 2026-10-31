@@ -1,0 +1,3 @@
+[submodule "extern/libresidfp"]
+	path = extern/libresidfp
+	url = https://github.com/libsidplayfp/libresidfp.git
