@@ -85,9 +85,8 @@ def bump_patch(text: str) -> str:
 
 
 def check(args) -> int:
-    tags = remote_tags()
-    latest = args.latest or latest_release(tags)
-    pinned = args.pinned or pinned_tag(tags)
+    latest = args.latest or latest_release(remote_tags())
+    pinned = args.pinned or pinned_tag(remote_tags())
     if not semver(latest) or not semver(pinned):
         sys.exit(f"cannot compare latest={latest!r} with pinned={pinned!r}")
     newer = semver(latest) > semver(pinned)
