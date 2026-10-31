@@ -10,7 +10,7 @@ FROM base AS test
 WORKDIR /src
 COPY . .
 RUN pip install --no-build-isolation -e .
-RUN black --check src tests \
-    && pylint src tests \
+RUN black --check src tests scripts \
+    && pylint src tests scripts \
     && clang-format --dry-run --Werror src/binding.cpp \
     && OMP_NUM_THREADS=2 pytest -n auto --cov=pylibresidfp --cov-fail-under=85

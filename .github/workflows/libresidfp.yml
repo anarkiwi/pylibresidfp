@@ -1,0 +1,64 @@
+name: libresidfp
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - id: release
+        run: |
+          python scripts/libresidfp_release.py check > "$RUNNER_TEMP/release.txt"
+          tee -a "$GITHUB_OUTPUT" < "$RUNNER_TEMP/release.txt"
+      - id: existing
+        if: steps.release.outputs.newer == 'true'
+        run: |
+          branch="libresidfp-${{ steps.release.outputs.latest }}"
+          prs=$(gh pr list --head "$branch" --state all --json number --jq length)
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "open=$([ "$prs" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Move the submodule and bump the version
+        if: steps.existing.outputs.open == 'false'
+        run: |
+          tag=${{ steps.release.outputs.latest }}
+          git -C extern/libresidfp fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag"
+          git -C extern/libresidfp checkout "$tag"
+          python scripts/libresidfp_release.py bump-version
+      - id: patches
+        if: steps.existing.outputs.open == 'false'
+        continue-on-error: true
+        run: python scripts/libresidfp_release.py patches
+      - name: Open the pull request and dispatch CI
+        if: steps.existing.outputs.open == 'false'
+        run: |
+          tag=${{ steps.release.outputs.latest }}
+          branch=${{ steps.existing.outputs.branch }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "libresidfp $tag"
+          git push origin "$branch"
+          body="Moves extern/libresidfp from ${{ steps.release.outputs.pinned }} to $tag and bumps the pylibresidfp patch version.
+
+          Release notes: https://github.com/libsidplayfp/libresidfp/releases/tag/$tag"
+          draft=()
+          if [ "${{ steps.patches.outcome }}" != success ]; then
+            body="$body
+
+          patches/*.patch do not apply to $tag; see the workflow run."
+            draft=(--draft)
+          fi
+          gh pr create --base main --head "$branch" --title "libresidfp $tag" --body "$body" "${draft[@]}"
+          gh workflow run ci.yml --ref "$branch"
