@@ -101,7 +101,10 @@ class SID:
         registers are ignored."""
         return np.rec.fromarrays(
             self._chip.envelope_trace(
-                int(voice), self._writes(writes), int(until), -1 if lfsr is None else int(lfsr)
+                int(voice),
+                self._writes(writes),
+                int(until),
+                -1 if lfsr is None else int(lfsr),
             ),
             names=("cycle", "envelope", "state"),
         )
