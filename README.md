@@ -24,6 +24,8 @@ trace, end = envelope_run(state, writes, until, start)   # from pylibresidfp imp
                                # envelope_trace from `state` (taken at cycle start) with no chip,
                                # event-driven; regs 4/5/6 are control/AD/SR, others ignored
 runs = envelope_runs(state, [writes_a, writes_b], until, start)  # several candidates, one call
+grid = envelope_grid(states, programs, cycles)  # (N, P, 2) digests of every program from every state
+                               # (an ENVELOPE_STATE array): equal digests, same envelope and future
 state = sid.save_state(); sid.restore_state(state)
 twin = sid.copy()              # same parameters and state; SID is also picklable
 ```
@@ -39,7 +41,7 @@ internals through `patches/0002-probe-access.patch`, which befriends a `reSIDfp:
 reproducible byte for byte; `patches/0004-initialise-params.patch` gives the filter parameters
 libresidfp keeps for it their defaults rather than uninitialised memory.
 
-`clock`, `run`, `serve`, `trace`, `envelope_trace`, `envelope_phases`, `envelope_run`, `envelope_runs`, `save_state` and `restore_state` release the GIL. Each instance has a busy
+`clock`, `run`, `serve`, `trace`, `envelope_trace`, `envelope_phases`, `envelope_run`, `envelope_runs`, `envelope_grid`, `save_state` and `restore_state` release the GIL. Each instance has a busy
 flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct
 instances run in parallel.
 
