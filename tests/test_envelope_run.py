@@ -186,3 +186,15 @@ def test_grid_digests_match_envelope_run_and_states_round_trip():
     assert (grid[:, 0] == grid[:, 12]).all()
     with pytest.raises(ValueError):
         envelope_grid(np.zeros((1, 3), np.uint8), np.stack(progs), 400)
+
+
+def test_grid_levels_ignore_when_the_state_changed():
+    sid = SID()
+    sid.write(5, 0x00)
+    sid.write(6, 0xF0)
+    state = np.frombuffer(sid.envelope_state(0), ENVELOPE_STATE).copy()
+    state["lfsr"] = 0x2000
+    progs = np.array([[[1, 4, 0x41], [5, 4, 0x40]], [[3, 4, 0x41], [5, 4, 0x40]]])
+    full = envelope_grid(state, progs, 8)
+    levels = envelope_grid(state, progs, 8, levels=True)
+    assert (full[0, 0] != full[0, 1]).any() and (levels[0, 0] == levels[0, 1]).all()
