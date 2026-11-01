@@ -4,14 +4,19 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 #include "EnvelopeGenerator.h"
+#include "Filter.h"
+#include "Filter6581.h"
+#include "Filter8580.h"
 #include "SID.h"
 #include "WaveformGenerator.h"
 #include "residfp/residfp.h"
@@ -20,8 +25,97 @@ namespace py = pybind11;
 
 namespace reSIDfp {
 
+struct FilterWrite {
+  int at;
+  uint8_t reg;
+  uint8_t value;
+};
+
+struct Block {
+  static constexpr int kCycles = 2048;
+  int n = 0;
+  std::array<float, 3 * kCycles> wav;
+  std::array<uint8_t, 3 * kCycles> env;
+  std::array<uint16_t, kCycles> filt;
+  std::vector<FilterWrite> writes;
+};
+
 class Probe {
 public:
+  static void clock_voices(residfp &r, Block &b, unsigned cycles) {
+    SID &s = r.sid;
+    s.ageBusValue(static_cast<int>(cycles));
+    while (cycles != 0) {
+      const unsigned d = std::min(s.nextVoiceSync, cycles);
+      for (unsigned i = 0; i < d; ++i, ++b.n) {
+        s.clockWaveGen();
+        s.clockEnvGen();
+        for (int v = 0; v < 3; ++v)
+          b.wav[3 * b.n + v] = s.voice[v].output();
+        for (int v = 0; v < 3; ++v)
+          b.env[3 * b.n + v] = s.voice[v].envelope()->output();
+      }
+      cycles -= d;
+      s.nextVoiceSync -= d;
+      if (s.nextVoiceSync == 0)
+        s.voiceSync(true);
+    }
+  }
+  static void write_voices(residfp &r, Block &b, int reg, uint8_t value) {
+    if (reg < 0x15 || reg > 0x18) {
+      r.sid.write(reg, value);
+      return;
+    }
+    SID &s = r.sid;
+    s.busValue = value;
+    s.busValueTtl = s.modelTTL;
+    s.voiceSync(false);
+    b.writes.push_back({b.n, static_cast<uint8_t>(reg), value});
+  }
+  static void clock_filter(residfp &r, Block &b) {
+    SID &s = r.sid;
+    Filter &f = *s.filter;
+    const auto apply = [&](const FilterWrite &w) {
+      for (Filter *g : {static_cast<Filter *>(s.filter6581),
+                        static_cast<Filter *>(s.filter8580)}) {
+        switch (w.reg) {
+        case 0x15:
+          g->writeFC_LO(w.value);
+          break;
+        case 0x16:
+          g->writeFC_HI(w.value);
+          break;
+        case 0x17:
+          g->writeRES_FILT(w.value);
+          break;
+        default:
+          g->writeMODE_VOL(w.value);
+          break;
+        }
+      }
+    };
+    size_t k = 0;
+    for (int i = 0; i < b.n; ++i) {
+      for (; k < b.writes.size() && b.writes[k].at == i; ++k)
+        apply(b.writes[k]);
+      const float *w = &b.wav[3 * i];
+      const uint8_t *e = &b.env[3 * i];
+      b.filt[i] = f.clock(w[0], w[1], w[2], e[0], e[1], e[2]);
+    }
+    for (; k < b.writes.size(); ++k)
+      apply(b.writes[k]);
+  }
+  static void clock_output(residfp &r, const Block &b,
+                           std::vector<int16_t> &out) {
+    SID &s = r.sid;
+    Resampler &rs = *s.resampler;
+    for (int i = 0; i < b.n; ++i) {
+      const int32_t x =
+          s.externalFilter.clock(static_cast<int32_t>(b.filt[i]) + INT16_MIN);
+      if (rs.input(x))
+        out.push_back(rs.getOutput(s.scaleFactor));
+    }
+  }
   static const EnvelopeGenerator &env(residfp &r, int v) {
     return *r.sid.voice[v].envelope();
   }
@@ -690,8 +784,9 @@ constexpr size_t kStateHeader = sizeof(int64_t);
 
 class Chip {
 public:
-  Chip(int model, double clock_hz, double sampling_hz, int method, bool filter)
-      : per_cycle_(sampling_hz / clock_hz) {
+  Chip(int model, double clock_hz, double sampling_hz, int method, bool filter,
+       bool pipeline)
+      : per_cycle_(sampling_hz / clock_hz), pipeline_(pipeline) {
     if (!sid_.setChipModel(model ? reSIDfp::CSG8580 : reSIDfp::MOS6581))
       throw std::invalid_argument("unsupported chip model");
     sid_.enableFilter(filter);
@@ -972,12 +1067,16 @@ private:
     out.reserve(static_cast<size_t>((until - cycle_) * per_cycle_) + count + 1);
     {
       py::gil_scoped_release release;
-      for (size_t i = 0; i < count; ++i) {
-        advance(w[3 * i], out);
-        sid_.write(static_cast<int>(w[3 * i + 1]),
-                   static_cast<unsigned char>(w[3 * i + 2]));
+      if (pipeline_) {
+        pipelined(w, until, out);
+      } else {
+        for (size_t i = 0; i < count; ++i) {
+          advance(w[3 * i], out);
+          sid_.write(static_cast<int>(w[3 * i + 1]),
+                     static_cast<unsigned char>(w[3 * i + 2]));
+        }
+        advance(until, out);
       }
-      advance(until, out);
     }
     samples_t arr(static_cast<py::ssize_t>(out.size()));
     std::copy(out.begin(), out.end(), arr.mutable_data());
@@ -994,8 +1093,79 @@ private:
     }
   }
 
+  void pipelined(const std::vector<int64_t> &w, int64_t until,
+                 std::vector<int16_t> &out) {
+    using reSIDfp::Block;
+    using reSIDfp::Probe;
+    using Counter = std::atomic<int64_t>;
+    constexpr int64_t kDepth = 4;
+    constexpr int64_t kClosed = int64_t{1} << 62;
+    std::vector<Block> ring(kDepth);
+    alignas(64) Counter made{0};
+    alignas(64) Counter filtered{0};
+    alignas(64) Counter emitted{0};
+    const auto ready = [](Counter &c, int64_t k) {
+      for (;;) {
+        const int64_t v = c.load(std::memory_order_acquire);
+        if (k < (v & ~kClosed))
+          return true;
+        if (v & kClosed)
+          return false;
+        c.wait(v, std::memory_order_acquire);
+      }
+    };
+    const auto publish = [](Counter &c, int64_t v) {
+      c.store(v, std::memory_order_release);
+      c.notify_one();
+    };
+    std::thread filter([&] {
+      int64_t k = 0;
+      for (; ready(made, k); ++k) {
+        Probe::clock_filter(sid_, ring[k % kDepth]);
+        publish(filtered, k + 1);
+      }
+      publish(filtered, k | kClosed);
+    });
+    std::thread output([&] {
+      for (int64_t k = 0; ready(filtered, k); ++k) {
+        Probe::clock_output(sid_, ring[k % kDepth], out);
+        publish(emitted, k + 1);
+      }
+    });
+    int64_t k = 0;
+    Block *b = &ring[0];
+    b->n = 0;
+    b->writes.clear();
+    const auto advance_to = [&](int64_t target) {
+      while (cycle_ < target) {
+        if (b->n == Block::kCycles) {
+          publish(made, ++k);
+          if (k >= kDepth)
+            ready(emitted, k - kDepth);
+          b = &ring[k % kDepth];
+          b->n = 0;
+          b->writes.clear();
+        }
+        const auto step = static_cast<unsigned>(
+            std::min<int64_t>(target - cycle_, Block::kCycles - b->n));
+        Probe::clock_voices(sid_, *b, step);
+        cycle_ += step;
+      }
+    };
+    for (size_t i = 0; i < w.size(); i += 3) {
+      advance_to(w[i]);
+      Probe::write_voices(sid_, *b, static_cast<int>(w[i + 1]),
+                          static_cast<uint8_t>(w[i + 2]));
+    }
+    advance_to(until);
+    publish(made, (k + 1) | kClosed);
+    filter.join();
+    output.join();
+  }
+
   reSIDfp::residfp sid_;
   double per_cycle_;
+  bool pipeline_;
   int64_t max_step_ = 1;
   std::vector<int16_t> scratch_ = std::vector<int16_t>(kScratch);
   int64_t cycle_ = 0;
@@ -1139,7 +1309,7 @@ PYBIND11_MODULE(_core, m) {
   m.def("envelope_runs", &envelope_runs);
   m.def("envelope_grid", &envelope_grid);
   py::class_<Chip>(m, "Chip")
-      .def(py::init<int, double, double, int, bool>())
+      .def(py::init<int, double, double, int, bool, bool>())
       .def_property_readonly("cycle", &Chip::cycle)
       .def("write", &Chip::write)
       .def("read", &Chip::read)

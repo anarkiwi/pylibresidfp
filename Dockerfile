@@ -4,7 +4,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential cmake ninja-build patch clang-format \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir "scikit-build-core>=0.10" "pybind11>=2.13" numpy pytest pytest-cov \
-    pytest-xdist black pylint "vagrant-moses[cpu]"
+    pytest-xdist black pylint tqdm "vagrant-moses[cpu]"
 
 FROM base AS test
 WORKDIR /src

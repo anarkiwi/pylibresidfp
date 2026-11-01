@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pylibresidfp"
-version = "0.5.0"
+version = "0.6.0"
 description = "pybind11 binding of libresidfp (reSIDfp SID emulator) with chip state save/restore"
 readme = "README.md"
 license = "GPL-2.0-or-later"
@@ -24,7 +24,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov", "pytest-xdist", "vagrant-moses[cpu]"]
-dev = ["pylibresidfp[test]", "black", "pylint"]
+dev = ["pylibresidfp[test]", "black", "pylint", "tqdm"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
