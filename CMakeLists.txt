@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20...3.31)
 project(pylibresidfp LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE)
@@ -16,6 +16,7 @@ if(NOT EXISTS ${UPSTREAM}/src/SID.cpp)
 endif()
 
 find_package(pybind11 CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 find_program(PATCH_EXE patch REQUIRED)
 set(RES ${CMAKE_CURRENT_BINARY_DIR}/libresidfp)
@@ -65,6 +66,7 @@ list(APPEND RES_SOURCES ${RES}/src/version.cc ${RES}/src/residfp/residfp.cpp)
 
 pybind11_add_module(_core MODULE src/binding.cpp ${RES_SOURCES})
 target_include_directories(_core PRIVATE ${GEN} ${RES}/src)
+target_link_libraries(_core PRIVATE Threads::Threads)
 target_compile_options(_core PRIVATE -ffast-math -fno-unsafe-math-optimizations
                                      -ftree-loop-vectorize)
 target_compile_definitions(_core PRIVATE VERSION_INFO="${SKBUILD_PROJECT_VERSION}")

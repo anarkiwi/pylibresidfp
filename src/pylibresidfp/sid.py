@@ -94,15 +94,21 @@ class Phases:
 
 
 class SID:
-    """MOS 6581 / CSG 8580 emulation backed by libresidfp."""
+    """MOS 6581 / CSG 8580 emulation backed by libresidfp.
 
-    def __init__(
+    ``pipeline=True`` renders audio on three threads, one each for the voices,
+    the filter and the external filter with the resampler, handing blocks of
+    cycles from stage to stage. Each stage clocks its part of the chip in cycle
+    order, so output and state are identical to the single-threaded path."""
+
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         model: str = "6581",
         clock_hz: float = 985248.0,
         sampling_hz: float = 44100.0,
         method: str = "decimate",
         filter: bool = True,  # pylint: disable=redefined-builtin
+        pipeline: bool = False,
     ) -> None:
         if model not in _MODELS:
             raise ValueError(f"model must be one of {sorted(_MODELS)}: {model!r}")
@@ -117,12 +123,14 @@ class SID:
         self.sampling_hz = float(sampling_hz)
         self.method = method
         self.filter = bool(filter)
+        self.pipeline = bool(pipeline)
         self._chip = Chip(
             _MODELS[model],
             self.clock_hz,
             self.sampling_hz,
             _METHODS[method],
             self.filter,
+            self.pipeline,
         )
 
     def write(self, reg: int, value: int) -> None:
@@ -207,6 +215,7 @@ class SID:
             "sampling_hz": self.sampling_hz,
             "method": self.method,
             "filter": self.filter,
+            "pipeline": self.pipeline,
         }
 
     def copy(self) -> SID:

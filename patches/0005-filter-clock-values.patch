@@ -1,0 +1,38 @@
+diff --git a/src/Filter.h b/src/Filter.h
+--- a/src/Filter.h
++++ b/src/Filter.h
+@@ -156,6 +156,20 @@
+     uint16_t clock(Voice& voice1, Voice& voice2, Voice& voice3);
+ 
+     /**
++     * SID clocking - 1 cycle, from precomputed voice outputs
++     *
++     * @param wav1 voice 1 analog output
++     * @param wav2 voice 2 analog output
++     * @param wav3 voice 3 analog output
++     * @param env1 voice 1 envelope output
++     * @param env2 voice 2 envelope output
++     * @param env3 voice 3 envelope output
++     * @return filtered output, unsigned 16 bit
++     */
++    uint16_t clock(float wav1, float wav2, float wav3,
++                   uint8_t env1, uint8_t env2, uint8_t env3);
++
++    /**
+      * Enable filter.
+      *
+      * @param enable
+@@ -225,6 +239,13 @@
+     const uint8_t env2 = voice2.envelope()->output();
+     const uint8_t env3 = voice3.envelope()->output();
+ 
++    return clock(wav1, wav2, wav3, env1, env2, env3);
++}
++
++RESIDFP_INLINE
++uint16_t Filter::clock(float wav1, float wav2, float wav3,
++                       uint8_t env1, uint8_t env2, uint8_t env3)
++{
+     // Voltage summer for filter input
+     int32_t Vsum = 0;
+     Vsum += filt1 ? getNormalizedVoice(wav1, env1) : 0;

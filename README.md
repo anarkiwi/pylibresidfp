@@ -6,7 +6,8 @@ emulator) with chip state save/restore, a deterministic output and a GIL-free re
 ```python
 from pylibresidfp import SID
 
-sid = SID(model="6581", clock_hz=985248.0, sampling_hz=44100.0, method="decimate", filter=True)
+sid = SID(model="6581", clock_hz=985248.0, sampling_hz=44100.0, method="decimate", filter=True,
+          pipeline=False)  # pipeline=True: voices, filter and output on three threads, same samples
 sid.write(24, 15); sid.read(27); sid.peek(27); sid.reset()
 sid.cycle                      # absolute cycle count, starts at 0
 sid.clock(cycles)              # np.int16 samples for those cycles
@@ -45,6 +46,9 @@ libresidfp keeps for it their defaults rather than uninitialised memory.
 flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct
 instances run in parallel.
 
+`pipeline=True` splits `clock`, `run` and `serve` across three threads with identical samples
+and state; see [docs/pipeline.md](docs/pipeline.md).
+
 Fed directly from `vagrant_moses`: `sid.run(native_sid.drain_writes(), until)`.
 
 ## Determinism
@@ -61,7 +65,7 @@ State is not portable across builds. `sid.cycle` is part of the saved state.
 
 ## Build
 
-`git clone --recurse-submodules`, then `pip install .`. Needs CMake >= 3.20, `patch` and a C++17
+`git clone --recurse-submodules`, then `pip install .`. Needs CMake >= 3.20, `patch` and a C++20
 compiler. libresidfp is the submodule `extern/libresidfp`, pinned to a release tag; its version is
 read from the submodule's `configure.ac`, and `.github/workflows/libresidfp.yml` opens a PR when a
 newer release appears. The build copies its sources and applies `patches/` to the copy. Tests: `pip install -e .[dev]`, then
