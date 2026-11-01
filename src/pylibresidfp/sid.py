@@ -11,6 +11,7 @@ from ._core import (  # pylint: disable=no-name-in-module,import-error
     Chip,
     envelope_run as _envelope_run,
     envelope_runs as _envelope_runs,
+    envelope_grid as _envelope_grid,
 )
 
 _MODELS = {"6581": 0, "8580": 1}
@@ -253,3 +254,44 @@ def envelope_runs(
             bytes(state), [_as_writes(w) for w in writes], int(until), int(start)
         )
     ]
+
+
+ENVELOPE_STATE = np.dtype(
+    [
+        ("lfsr", "<u2"),
+        ("rate", "<u2"),
+        ("exponential_counter", "<u4"),
+        ("exponential_counter_period", "<u4"),
+        ("new_exponential_counter_period", "<u4"),
+        ("state_pipeline", "<u4"),
+        ("envelope_pipeline", "<u4"),
+        ("exponential_pipeline", "<u4"),
+        ("state", "<i4"),
+        ("next_state", "<i4"),
+        ("counter_enabled", "u1"),
+        ("gate", "u1"),
+        ("reset_lfsr", "u1"),
+        ("envelope_counter", "u1"),
+        ("attack", "u1"),
+        ("decay", "u1"),
+        ("sustain", "u1"),
+        ("release", "u1"),
+        ("env3", "u1"),
+    ]
+)
+"""The fields of :meth:`SID.envelope_state`'s bytes, for reading or building states."""
+
+
+def envelope_grid(
+    states: ArrayLike, programs: ArrayLike, cycles: int
+) -> NDArray[np.uint64]:
+    """Each of ``programs`` run from each of ``states`` for ``cycles`` cycles, as a 128-bit digest
+    of the :func:`envelope_run` trace and end state: equal digests mean the same envelope and the
+    same future. ``states`` is an :data:`ENVELOPE_STATE` array (or rows of state bytes) and
+    ``programs`` a ``(P, K, 3)`` array of writes ``(cycle from 0, reg, value)``, padded with
+    writes to other registers. Returns ``(len(states), P, 2)``; the GIL is released."""
+    raw = np.ascontiguousarray(states)
+    if raw.dtype == ENVELOPE_STATE:
+        raw = raw.view(np.uint8).reshape(-1, ENVELOPE_STATE.itemsize)
+    progs = np.ascontiguousarray(programs, dtype=np.int64)
+    return _envelope_grid(raw.astype(np.uint8, copy=False), progs, int(cycles))

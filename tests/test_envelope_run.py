@@ -160,3 +160,33 @@ def test_much_faster_than_envelope_trace():
     slow, want = best(lambda: sid.envelope_trace(0, writes, until))
     assert np.array_equal(trace.cycle, want.cycle)
     assert slow > 20 * fast
+
+
+def test_grid_digests_match_envelope_run_and_states_round_trip():
+    from pylibresidfp import ENVELOPE_STATE, envelope_grid
+
+    rng = np.random.default_rng(7)
+    starts, raw = [], []
+    for _ in range(6):
+        sid = _chip(rng)
+        raw.append(sid.envelope_state(0))
+        starts.append(sid.cycle)
+    states = np.frombuffer(b"".join(raw), ENVELOPE_STATE)
+    assert [s.tobytes() for s in states] == raw
+    progs = []
+    for _ in range(12):
+        w = np.array(_writes(rng, 0)[0], np.int64).reshape(-1, 3)
+        w = w[w[:, 0] < 400]
+        progs.append(np.vstack([w, np.tile([400, 0, 0], (14 - len(w), 1))]))
+    progs.append(progs[0])
+    grid = envelope_grid(states, np.stack(progs), 400)
+    assert grid.shape == (6, 13, 2) and grid.dtype == np.uint64
+    for n, state in enumerate(raw):
+        runs = envelope_runs(state, [p[p[:, 0] < 400] for p in progs], 400, 0)
+        keys = [(t.tobytes(), e) for t, e in runs]
+        for i in range(13):
+            for j in range(13):
+                assert (keys[i] == keys[j]) == (grid[n, i] == grid[n, j]).all()
+    assert (grid[:, 0] == grid[:, 12]).all()
+    with pytest.raises(ValueError):
+        envelope_grid(np.zeros((1, 3), np.uint8), np.stack(progs), 400)
