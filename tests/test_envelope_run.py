@@ -3,7 +3,7 @@ import time
 import numpy as np
 import pytest
 
-from pylibresidfp import SID, envelope_run, envelope_runs
+from pylibresidfp import ENVELOPE_STATE, SID, envelope_grid, envelope_run, envelope_runs
 
 POOLS = (range(0, 9), range(9, 13), range(13, 16))
 
@@ -163,14 +163,8 @@ def test_much_faster_than_envelope_trace():
 
 
 def test_grid_digests_match_envelope_run_and_states_round_trip():
-    from pylibresidfp import ENVELOPE_STATE, envelope_grid
-
     rng = np.random.default_rng(7)
-    starts, raw = [], []
-    for _ in range(6):
-        sid = _chip(rng)
-        raw.append(sid.envelope_state(0))
-        starts.append(sid.cycle)
+    raw = [_chip(rng).envelope_state(0) for _ in range(6)]
     states = np.frombuffer(b"".join(raw), ENVELOPE_STATE)
     assert [s.tobytes() for s in states] == raw
     progs = []
@@ -182,8 +176,10 @@ def test_grid_digests_match_envelope_run_and_states_round_trip():
     grid = envelope_grid(states, np.stack(progs), 400)
     assert grid.shape == (6, 13, 2) and grid.dtype == np.uint64
     for n, state in enumerate(raw):
-        runs = envelope_runs(state, [p[p[:, 0] < 400] for p in progs], 400, 0)
-        keys = [(t.tobytes(), e) for t, e in runs]
+        keys = [
+            (t.tobytes(), e)
+            for t, e in envelope_runs(state, [p[p[:, 0] < 400] for p in progs], 400, 0)
+        ]
         for i in range(13):
             for j in range(13):
                 assert (keys[i] == keys[j]) == (grid[n, i] == grid[n, j]).all()
