@@ -40,7 +40,9 @@ tracing no longer renders the same audio as one that was not. `voices` and `trac
 internals through `patches/0002-probe-access.patch`, which befriends a `reSIDfp::Probe` class.
 `patches/0003-zero-state-padding.patch` zeroes the saved state's struct padding, so `save_state` is
 reproducible byte for byte; `patches/0004-initialise-params.patch` gives the filter parameters
-libresidfp keeps for it their defaults rather than uninitialised memory.
+libresidfp keeps for it their defaults rather than uninitialised memory. `patches/0006-state-fc-width.patch`
+widens the saved filter cutoff to its full 11 bits, so a restored chip keeps the cutoff's high bits
+through later writes to register 0x15.
 
 `clock`, `run`, `serve`, `trace`, `envelope_trace`, `envelope_phases`, `envelope_run`, `envelope_runs`, `envelope_grid`, `save_state` and `restore_state` release the GIL. Each instance has a busy
 flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct

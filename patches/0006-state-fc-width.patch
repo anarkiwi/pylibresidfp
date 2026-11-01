@@ -1,0 +1,12 @@
+diff --git a/src/State.h b/src/State.h
+--- a/src/State.h
++++ b/src/State.h
+@@ -120,7 +120,7 @@
+     int32_t Vbp[2];
+     int32_t Vlp[2];
+     float extin[2];
+-    uint8_t fc[2];
++    uint16_t fc[2];
+     uint8_t vol[2];
+     uint8_t filt[2];
+     bool filt1[2];
