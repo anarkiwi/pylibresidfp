@@ -20,7 +20,7 @@ every call joins both workers before returning, so the chip state seen by `save_
 later serial call is the same as after the single-threaded loop.
 
 Every component sees the same inputs in the same order as in `SID::clock`, so samples and state
-are identical with and without the pipeline (`tests/test_pipeline.py` also pins the serial output
+are identical with and without the pipeline (`tests/test_pipeline.py` also pins the serial audio
 to digests from the 0.5.0 release).
 
 ## Throughput

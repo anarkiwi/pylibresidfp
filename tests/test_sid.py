@@ -371,3 +371,20 @@ def test_test_bit_does_not_reach_the_envelope(ad):
 def test_fresh_state_carries_the_filter_defaults(model):
     defaults = struct.pack("<3d", 0.5, 19.0 / 39.0, 0.5)
     assert defaults in SID(model).save_state()
+
+
+@pytest.mark.parametrize("fc_hi", [0x20, 0xFF])
+def test_restore_keeps_cutoff_high_bits(case, fc_hi):
+    def played():
+        sid = SID(case[0], method=case[1])
+        sid.run(
+            np.concatenate([TONE, [[CYCLES, 24, 0x1F], [CYCLES, 22, fc_hi]]]),
+            CYCLES + 1000,
+        )
+        return sid
+
+    lo = np.array([[CYCLES + 2000, 21, 0x05]], np.int64)
+    for restored in (played().copy(), pickle.loads(pickle.dumps(played()))):
+        assert np.array_equal(
+            played().run(lo, CYCLES + 20000), restored.run(lo, CYCLES + 20000)
+        )
