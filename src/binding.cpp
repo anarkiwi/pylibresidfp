@@ -1083,16 +1083,16 @@ uint64_t mix(uint64_t h, uint64_t x) {
   return h ^ (h >> 31);
 }
 
-std::array<uint64_t, 2> digest(const Run &r) {
+std::array<uint64_t, 2> digest(const Run &r, bool levels) {
   std::array<uint64_t, 2> h{0x243f6a8885a308d3ULL, 0x13198a2e03707344ULL};
   const auto put = [&](uint64_t x) {
     h[0] = mix(h[0], x);
     h[1] = mix(h[1], x ^ 0xa4093822299f31d0ULL);
   };
-  put(r.cycles.size());
   for (size_t i = 0; i < r.cycles.size(); ++i)
-    put(static_cast<uint64_t>(r.cycles[i]) << 16 | r.level[i] << 8 |
-        r.state[i]);
+    if (!levels || i == 0 || r.level[i] != r.level[i - 1])
+      put(static_cast<uint64_t>(r.cycles[i]) << 16 | r.level[i] << 8 |
+          (levels ? 0 : r.state[i]));
   for (const char c : r.end)
     put(static_cast<uint8_t>(c));
   return h;
@@ -1101,7 +1101,7 @@ std::array<uint64_t, 2> digest(const Run &r) {
 py::array_t<uint64_t> envelope_grid(
     const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>
         &states,
-    const writes_t &programs, int64_t cycles) {
+    const writes_t &programs, int64_t cycles, bool levels) {
   const size_t size = pack(reSIDfp::EnvelopeGenerator()).size();
   if (states.ndim() != 2 || static_cast<size_t>(states.shape(1)) != size)
     throw std::invalid_argument("states must have shape (N, state size)");
@@ -1125,7 +1125,7 @@ py::array_t<uint64_t> envelope_grid(
     py::gil_scoped_release release;
     for (const auto &e : envs)
       for (const auto &w : progs) {
-        const auto h = digest(envelope_run(e, w, 0, cycles));
+        const auto h = digest(envelope_run(e, w, 0, cycles), levels);
         *o++ = h[0];
         *o++ = h[1];
       }

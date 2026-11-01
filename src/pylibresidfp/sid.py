@@ -283,15 +283,19 @@ ENVELOPE_STATE = np.dtype(
 
 
 def envelope_grid(
-    states: ArrayLike, programs: ArrayLike, cycles: int
+    states: ArrayLike, programs: ArrayLike, cycles: int, levels: bool = False
 ) -> NDArray[np.uint64]:
     """Each of ``programs`` run from each of ``states`` for ``cycles`` cycles, as a 128-bit digest
     of the :func:`envelope_run` trace and end state: equal digests mean the same envelope and the
     same future. ``states`` is an :data:`ENVELOPE_STATE` array (or rows of state bytes) and
     ``programs`` a ``(P, K, 3)`` array of writes ``(cycle from 0, reg, value)``, padded with
-    writes to other registers. Returns ``(len(states), P, 2)``; the GIL is released."""
+    writes to other registers. With ``levels`` the digest covers only the envelope's level changes
+    and the end state, not when the generator changed state. Returns ``(len(states), P, 2)``; the
+    GIL is released."""
     raw = np.ascontiguousarray(states)
     if raw.dtype == ENVELOPE_STATE:
         raw = raw.view(np.uint8).reshape(-1, ENVELOPE_STATE.itemsize)
     progs = np.ascontiguousarray(programs, dtype=np.int64)
-    return _envelope_grid(raw.astype(np.uint8, copy=False), progs, int(cycles))
+    return _envelope_grid(
+        raw.astype(np.uint8, copy=False), progs, int(cycles), bool(levels)
+    )
