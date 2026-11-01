@@ -2,16 +2,29 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ._core import Chip  # pylint: disable=no-name-in-module,import-error
+from ._core import (  # pylint: disable=no-name-in-module,import-error
+    Chip,
+    envelope_run as _envelope_run,
+    envelope_runs as _envelope_runs,
+)
 
 _MODELS = {"6581": 0, "8580": 1}
 _METHODS = {"decimate": 0, "resample": 1}
 _MAX_RATIO = 16384.0
+
+
+def _as_writes(writes: ArrayLike) -> NDArray[np.int64]:
+    arr = np.asarray(writes)
+    if arr.size == 0:
+        return np.empty((0, 3), dtype=np.int64)
+    if arr.dtype.kind not in "iu":
+        raise ValueError("writes must be an integer array")
+    return arr.astype(np.int64, copy=False)
 
 
 @dataclass(frozen=True)
@@ -130,20 +143,11 @@ class SID:
     def cycle(self) -> int:
         return self._chip.cycle
 
-    @staticmethod
-    def _writes(writes: ArrayLike) -> NDArray[np.int64]:
-        arr = np.asarray(writes)
-        if arr.size == 0:
-            return np.empty((0, 3), dtype=np.int64)
-        if arr.dtype.kind not in "iu":
-            raise ValueError("writes must be an integer array")
-        return arr.astype(np.int64, copy=False)
-
     def run(self, writes: ArrayLike, until: int) -> NDArray[np.int16]:
-        return self._chip.run(self._writes(writes), int(until))
+        return self._chip.run(_as_writes(writes), int(until))
 
     def serve(self, writes: ArrayLike, cycle: int, reg: int) -> int:
-        return self._chip.serve(self._writes(writes), int(cycle), int(reg))
+        return self._chip.serve(_as_writes(writes), int(cycle), int(reg))
 
     def voices(self) -> dict[str, NDArray[np.int64]]:
         """Each voice's envelope and oscillator state, one ``(3,)`` array per field."""
@@ -154,7 +158,7 @@ class SID:
         envelope ``(cycle, voice, envelope, state)`` at the start and whenever it changes.
         """
         return np.rec.fromarrays(
-            self._chip.trace(self._writes(writes), int(until)),
+            self._chip.trace(_as_writes(writes), int(until)),
             names=("cycle", "voice", "envelope", "state"),
         )
 
@@ -168,12 +172,17 @@ class SID:
         return np.rec.fromarrays(
             self._chip.envelope_trace(
                 int(voice),
-                self._writes(writes),
+                _as_writes(writes),
                 int(until),
                 -1 if lfsr is None else int(lfsr),
             ),
             names=("cycle", "envelope", "state"),
         )
+
+    def envelope_state(self, voice: int) -> bytes:
+        """``voice``'s envelope generator, serialised field by field: equal generator states give
+        equal bytes. The input of :func:`envelope_run`, at :attr:`cycle`."""
+        return self._chip.envelope_state(int(voice))
 
     def envelope_phases(self, voice: int, writes: ArrayLike, until: int) -> Phases:
         """:meth:`envelope_trace` for every phase of ``voice``'s rate counter at once: phase ``k``
@@ -181,7 +190,7 @@ class SID:
         current rate. Exact for every phase, at a cost that follows the events and the distinct
         behaviours rather than the number of phases or cycles."""
         return Phases(
-            *self._chip.envelope_phases(int(voice), self._writes(writes), int(until))
+            *self._chip.envelope_phases(int(voice), _as_writes(writes), int(until))
         )
 
     def save_state(self) -> bytes:
@@ -212,3 +221,35 @@ class SID:
         state = data.pop("state")
         self.__init__(**data)  # type: ignore[misc]
         self.restore_state(state)
+
+
+def _envelope_result(raw: tuple[Any, ...]) -> tuple[np.recarray, bytes]:
+    return (
+        np.rec.fromarrays(raw[:3], names=("cycle", "envelope", "state")),
+        raw[3],
+    )
+
+
+def envelope_run(
+    state: bytes, writes: ArrayLike, until: int, start: int
+) -> tuple[np.recarray, bytes]:
+    """Step one envelope generator from ``state`` (:meth:`SID.envelope_state` at cycle ``start``)
+    to ``until`` under ``writes`` ``(cycle, reg, value)``, registers 4, 5 and 6 meaning control,
+    attack/decay and sustain/release (others are ignored; a write at ``until`` is left for the
+    next run). Returns what :meth:`SID.envelope_trace` gives and the end state, without a chip,
+    at a cost that follows the envelope's events rather than the cycles."""
+    return _envelope_result(
+        _envelope_run(bytes(state), _as_writes(writes), int(until), int(start))
+    )
+
+
+def envelope_runs(
+    state: bytes, writes: Sequence[ArrayLike], until: int, start: int
+) -> list[tuple[np.recarray, bytes]]:
+    """:func:`envelope_run` of each of ``writes`` from the same ``state``, in one call."""
+    return [
+        _envelope_result(raw)
+        for raw in _envelope_runs(
+            bytes(state), [_as_writes(w) for w in writes], int(until), int(start)
+        )
+    ]
