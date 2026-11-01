@@ -19,6 +19,11 @@ sid.envelope_trace(v, writes, until, lfsr=None)  # one voice's envelope alone fr
 sid.envelope_phases(v, writes, until)  # envelope_trace for every rate-counter phase at once: Phases
                                # (pieces, events, count, states) with .trajectory(k), exact for each k;
                                # events are ramps of envelope steps; .expand(table) -> (ids, times)
+state = sid.envelope_state(v)  # that voice's envelope generator as bytes: equal states, equal bytes
+trace, end = envelope_run(state, writes, until, start)   # from pylibresidfp import envelope_run:
+                               # envelope_trace from `state` (taken at cycle start) with no chip,
+                               # event-driven; regs 4/5/6 are control/AD/SR, others ignored
+runs = envelope_runs(state, [writes_a, writes_b], until, start)  # several candidates, one call
 state = sid.save_state(); sid.restore_state(state)
 twin = sid.copy()              # same parameters and state; SID is also picklable
 ```
@@ -31,9 +36,10 @@ precede `sid.cycle` or each other and must not exceed `until`; violations raise 
 tracing no longer renders the same audio as one that was not. `voices` and `trace` read libresidfp's
 internals through `patches/0002-probe-access.patch`, which befriends a `reSIDfp::Probe` class.
 `patches/0003-zero-state-padding.patch` zeroes the saved state's struct padding, so `save_state` is
-reproducible byte for byte.
+reproducible byte for byte; `patches/0004-initialise-params.patch` gives the filter parameters
+libresidfp keeps for it their defaults rather than uninitialised memory.
 
-`clock`, `run`, `serve`, `trace`, `envelope_trace`, `envelope_phases`, `save_state` and `restore_state` release the GIL. Each instance has a busy
+`clock`, `run`, `serve`, `trace`, `envelope_trace`, `envelope_phases`, `envelope_run`, `envelope_runs`, `save_state` and `restore_state` release the GIL. Each instance has a busy
 flag: use from a second thread while a call is in progress raises `RuntimeError`. Distinct
 instances run in parallel.
 

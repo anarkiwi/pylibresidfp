@@ -80,7 +80,32 @@ public:
            a.exponential_pipeline == b.exponential_pipeline &&
            a.resetLfsr == b.resetLfsr;
   }
+  static void sync_env3(EnvelopeGenerator &e) { e.env3 = e.envelope_counter; }
+  template <class IO> static void visit(EnvelopeGenerator &e, IO &&io) {
+    io(e.lfsr);
+    io(e.rate);
+    io(e.exponential_counter);
+    io(e.exponential_counter_period);
+    io(e.new_exponential_counter_period);
+    io(e.state_pipeline);
+    io(e.envelope_pipeline);
+    io(e.exponential_pipeline);
+    io(e.state);
+    io(e.next_state);
+    io(e.counter_enabled);
+    io(e.gate);
+    io(e.resetLfsr);
+    io(e.envelope_counter);
+    io(e.attack);
+    io(e.decay);
+    io(e.sustain);
+    io(e.release);
+    io(e.env3);
+  }
   static uint8_t level(residfp &r, int v) { return level(env(r, v)); }
+  static uint8_t next_state(const EnvelopeGenerator &e) {
+    return static_cast<uint8_t>(e.next_state);
+  }
   static uint8_t state(residfp &r, int v) { return state(env(r, v)); }
   static py::dict voices(residfp &r) {
     py::dict out;
@@ -554,6 +579,106 @@ private:
 
 } // namespace
 
+namespace {
+
+struct Pack {
+  std::string &out;
+  template <class T> void operator()(T &v) {
+    const auto x = static_cast<uint64_t>(v);
+    for (size_t i = 0; i < sizeof(T); ++i)
+      out.push_back(static_cast<char>(x >> (8 * i)));
+  }
+};
+
+struct Unpack {
+  const std::string &in;
+  size_t at = 0;
+  template <class T> void operator()(T &v) {
+    uint64_t x = 0;
+    for (size_t i = 0; i < sizeof(T); ++i)
+      x |= static_cast<uint64_t>(static_cast<uint8_t>(in[at++])) << (8 * i);
+    v = static_cast<T>(x);
+  }
+};
+
+std::string pack(reSIDfp::EnvelopeGenerator e) {
+  std::string out;
+  reSIDfp::Probe::visit(e, Pack{out});
+  return out;
+}
+
+reSIDfp::EnvelopeGenerator unpack(const std::string &bytes) {
+  reSIDfp::EnvelopeGenerator e;
+  if (bytes.size() != pack(e).size())
+    throw std::invalid_argument("envelope state size mismatch");
+  reSIDfp::Probe::visit(e, Unpack{bytes});
+  const uint16_t lfsr = reSIDfp::Probe::lfsr(e);
+  if (lfsr == 0 || lfsr > 0x7fff || reSIDfp::Probe::state(e) > 2 ||
+      reSIDfp::Probe::next_state(e) > 2)
+    throw std::invalid_argument("invalid envelope state");
+  return e;
+}
+
+struct Run {
+  std::vector<int64_t> cycles;
+  std::vector<uint8_t> level, state;
+  std::string end;
+};
+
+Run envelope_run(const reSIDfp::EnvelopeGenerator &start_env,
+                 const std::vector<Write> &w, int64_t start, int64_t until) {
+  using P = reSIDfp::Probe;
+  const auto &tab = table();
+  reSIDfp::EnvelopeGenerator e = start_env;
+  Run r;
+  const auto note = [&](int64_t at) {
+    const uint8_t l = P::level(e), s = P::state(e);
+    if (r.cycles.empty() || l != r.level.back() || s != r.state.back()) {
+      r.cycles.push_back(at);
+      r.level.push_back(l);
+      r.state.push_back(s);
+    }
+  };
+  int64_t now = start;
+  size_t i = 0;
+  note(now);
+  while (now < until) {
+    for (; i < w.size() && w[i].cycle == now; ++i) {
+      switch (w[i].reg) {
+      case 4:
+        e.writeCONTROL_REG(w[i].value);
+        break;
+      case 5:
+        e.writeATTACK_DECAY(w[i].value);
+        break;
+      default:
+        e.writeSUSTAIN_RELEASE(w[i].value);
+        break;
+      }
+    }
+    const int64_t next = i < w.size() ? w[i].cycle : until;
+    if (P::idle(e) && next > now) {
+      const uint16_t rate = P::rate(e);
+      const int64_t pos = tab.pos[P::lfsr(e)];
+      const bool reachable = rate != 0 && rate <= 0x7fff;
+      const int64_t gap = reachable ? wrap(tab.pos[rate] - pos) : next - now;
+      const int64_t k = std::min(next - now, gap);
+      if (k > 0) {
+        P::set_lfsr(e, tab.state[wrap(pos + k)]);
+        P::sync_env3(e);
+        now += k;
+        continue;
+      }
+    }
+    e.clock();
+    note(++now);
+  }
+  r.end = pack(e);
+  return r;
+}
+
+} // namespace
+
 using samples_t = py::array_t<int16_t>;
 using writes_t =
     py::array_t<int64_t, py::array::c_style | py::array::forcecast>;
@@ -774,6 +899,13 @@ public:
     return py::make_tuple(pa, ea, count, states);
   }
 
+  py::bytes envelope_state(int voice) {
+    Claim claim(busy_);
+    if (voice < 0 || voice > 2)
+      throw std::invalid_argument("voice out of range");
+    return py::bytes(pack(reSIDfp::Probe::env(sid_, voice)));
+  }
+
   py::bytes save_state() {
     Claim claim(busy_);
     std::string buf(kStateHeader + sid_.stateSize(), '\0');
@@ -872,7 +1004,81 @@ private:
 
 } // namespace
 
+namespace {
+
+std::vector<Write> envelope_writes(const writes_t &writes, int64_t start,
+                                   int64_t until) {
+  if (writes.ndim() != 2 || writes.shape(1) != 3)
+    throw std::invalid_argument("writes must have shape (N, 3)");
+  if (until < start)
+    throw std::invalid_argument("until is before start");
+  std::vector<Write> out;
+  const int64_t *row = writes.data();
+  int64_t prev = start;
+  for (py::ssize_t i = 0; i < writes.shape(0); ++i, row += 3) {
+    if (row[0] < prev)
+      throw std::invalid_argument(
+          "write cycles must not precede start or each other");
+    if (row[0] > until)
+      throw std::invalid_argument("write cycle is after until");
+    if (row[1] < 0 || row[1] > 0x1f)
+      throw std::invalid_argument("register out of range");
+    if (row[2] < 0 || row[2] > 0xff)
+      throw std::invalid_argument("value out of range");
+    prev = row[0];
+    if (row[0] < until && row[1] >= 4 && row[1] <= 6)
+      out.push_back(
+          {row[0], static_cast<int>(row[1]), static_cast<uint8_t>(row[2])});
+  }
+  return out;
+}
+
+py::tuple result(const Run &r) {
+  const auto array = [](const auto &v) {
+    using T = typename std::decay_t<decltype(v)>::value_type;
+    py::array_t<T> a(static_cast<py::ssize_t>(v.size()));
+    std::copy(v.begin(), v.end(), a.mutable_data());
+    return a;
+  };
+  return py::make_tuple(array(r.cycles), array(r.level), array(r.state),
+                        py::bytes(r.end));
+}
+
+py::list envelope_runs(const std::string &state, const py::list &batch,
+                       int64_t until, int64_t start) {
+  const auto env = unpack(state);
+  std::vector<std::vector<Write>> inputs;
+  for (const auto &item : batch)
+    inputs.push_back(envelope_writes(item.cast<writes_t>(), start, until));
+  std::vector<Run> runs;
+  {
+    py::gil_scoped_release release;
+    for (const auto &w : inputs)
+      runs.push_back(envelope_run(env, w, start, until));
+  }
+  py::list out;
+  for (const auto &r : runs)
+    out.append(result(r));
+  return out;
+}
+
+py::tuple envelope_run_one(const std::string &state, const writes_t &writes,
+                           int64_t until, int64_t start) {
+  const auto env = unpack(state);
+  const auto w = envelope_writes(writes, start, until);
+  Run r;
+  {
+    py::gil_scoped_release release;
+    r = envelope_run(env, w, start, until);
+  }
+  return result(r);
+}
+
+} // namespace
+
 PYBIND11_MODULE(_core, m) {
+  m.def("envelope_run", &envelope_run_one);
+  m.def("envelope_runs", &envelope_runs);
   py::class_<Chip>(m, "Chip")
       .def(py::init<int, double, double, int, bool>())
       .def_property_readonly("cycle", &Chip::cycle)
@@ -887,6 +1093,7 @@ PYBIND11_MODULE(_core, m) {
       .def("trace", &Chip::trace)
       .def("envelope_trace", &Chip::envelope_trace)
       .def("envelope_phases", &Chip::envelope_phases)
+      .def("envelope_state", &Chip::envelope_state)
       .def("save_state", &Chip::save_state)
       .def("restore_state", &Chip::restore_state);
 }

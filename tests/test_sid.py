@@ -1,5 +1,6 @@
 # pylint: disable=redefined-outer-name
 import pickle
+import struct
 import threading
 import time
 
@@ -364,3 +365,9 @@ def test_hard_restart_gate_on_per_rate_counter_phase(ad, onsets):
 @pytest.mark.parametrize("ad", [0x0A, 0x00, 0x50])
 def test_test_bit_does_not_reach_the_envelope(ad):
     assert _hard_restart_onsets(ad, 0x09) == _hard_restart_onsets(ad, 0x01)
+
+
+@pytest.mark.parametrize("model", ["6581", "8580"])
+def test_fresh_state_carries_the_filter_defaults(model):
+    defaults = struct.pack("<3d", 0.5, 19.0 / 39.0, 0.5)
+    assert defaults in SID(model).save_state()

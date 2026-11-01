@@ -1,0 +1,22 @@
+diff --git a/src/State.h b/src/State.h
+--- a/src/State.h
++++ b/src/State.h
+@@ -34,12 +34,12 @@
+ 
+ struct Params
+ {
+-    SamplingMethod method;
+-    double samplingFrequency;
+-    double filterCurve6581;
+-    double filterRange6581;
+-    double filterCurve8580;
+-    bool   old6581caps;
++    SamplingMethod method = DECIMATE;
++    double samplingFrequency = 0.0;
++    double filterCurve6581 = 0.5;
++    double filterRange6581 = 19.0 / 39.0;
++    double filterCurve8580 = 0.5;
++    bool   old6581caps = false;
+ };
+ 
+ struct State
