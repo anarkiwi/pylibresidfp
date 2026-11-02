@@ -25,7 +25,7 @@ jobs:
           submodules: recursive
       - uses: pypa/cibuildwheel@v4.3.5
         env:
-          CIBW_BUILD: "cp311-* cp312-* cp313-*"
+          CIBW_BUILD: "cp312-* cp313-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BEFORE_ALL_LINUX: command -v patch || yum -y install patch
